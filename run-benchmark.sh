@@ -16,7 +16,7 @@ else
 fi
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-MANIFEST_TEMPLATE="$SCRIPT_DIR/kubernetes/network-benchmark.yaml"
+MANIFEST_TEMPLATE="$SCRIPT_DIR/network-benchmark.yaml"
 LOG_DIR="$SCRIPT_DIR/logs"
 
 CLIENT_NODE=""
