@@ -27,7 +27,7 @@ metadata:
     run: __RUN_ID__
 spec:
   nodeName: __SERVER_NODE__
-  terminationGracePeriodSeconds: 5
+  terminationGracePeriodSeconds: 1
   restartPolicy: Never
   containers:
     - name: benchmark-server
@@ -40,11 +40,11 @@ spec:
           protocol: TCP
       resources:
         requests:
-          cpu: "100m"
-          memory: "64Mi"
+          cpu: "1"
+          memory: "1Gi"
         limits:
-          cpu: "2"
-          memory: "256Mi"
+          cpu: "4"
+          memory: "2Gi"
 ---
 apiVersion: v1
 kind: Pod
@@ -56,7 +56,7 @@ metadata:
     run: __RUN_ID__
 spec:
   nodeName: __CLIENT_NODE__
-  terminationGracePeriodSeconds: 5
+  terminationGracePeriodSeconds: 1
   restartPolicy: Never
   containers:
     - name: benchmark-client
@@ -66,8 +66,8 @@ spec:
       args: ["infinity"]
       resources:
         requests:
-          cpu: "100m"
-          memory: "64Mi"
+          cpu: "1"
+          memory: "1Gi"
         limits:
-          cpu: "2"
-          memory: "256Mi"
+          cpu: "4"
+          memory: "2Gi"
