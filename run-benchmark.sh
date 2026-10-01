@@ -235,7 +235,7 @@ CLIENT_POD="network-benchmark-client-$RUN_ID"
 SERVER_HOST="$SERVER_SERVICE"
 CLIENT_LOG="$LOG_DIR/${RUN_ID}-client.json"
 SERVER_LOG="$LOG_DIR/${RUN_ID}-server.log"
-METADATA_LOG="$LOG_DIR/${RUN_ID}-metadata.txt"
+METADATA_LOG="$LOG_DIR/${RUN_ID}-metadata.json"
 RENDERED_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/iperf3-benchmark.XXXXXX.yaml")
 APPLY_STARTED=false
 SERVER_EXEC_PID=""
@@ -286,20 +286,22 @@ sed \
   "$MANIFEST_TEMPLATE" > "$RENDERED_MANIFEST"
 
 cat > "$METADATA_LOG" <<EOF
-run_id=$RUN_ID
-started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-kube_context=$KUBE_CONTEXT
-client_node=$CLIENT_NODE
-server_node=$SERVER_NODE
-namespace=$NAMESPACE
-image=$IMAGE
-protocol=tcp
-duration=$DURATION_DISPLAY
-transfer_size=$TRANSFER_SIZE_DISPLAY
-parallel_streams=$PARALLEL_STREAMS
-service_name=$SERVER_SERVICE
-server_pod=$SERVER_POD
-client_pod=$CLIENT_POD
+{
+  "run_id": "$RUN_ID",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "kube_context": "$KUBE_CONTEXT",
+  "client_node": "$CLIENT_NODE",
+  "server_node": "$SERVER_NODE",
+  "namespace": "$NAMESPACE",
+  "image": "$IMAGE",
+  "protocol": "TCP",
+  "duration": "$DURATION_DISPLAY",
+  "transfer_size": "$TRANSFER_SIZE_DISPLAY",
+  "parallel_streams": $PARALLEL_STREAMS,
+  "service_name": "$SERVER_SERVICE",
+  "server_pod": "$SERVER_POD",
+  "client_pod": "$CLIENT_POD"
+}
 EOF
 
 printf '\n%s\n' "${CYAN}Benchmark configuration${RESET}"
@@ -383,7 +385,17 @@ kill "$SERVER_EXEC_PID" 2>/dev/null || true
 wait "$SERVER_EXEC_PID" 2>/dev/null || true
 SERVER_EXEC_PID=""
 
-printf 'finished_at=%s\nclient_status=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CLIENT_STATUS" >> "$METADATA_LOG"
+FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+METADATA_TMP=$(mktemp "${TMPDIR:-/tmp}/benchmark-metadata.XXXXXX.json")
+awk -v finished_at="$FINISHED_AT" -v client_status="$CLIENT_STATUS" '
+  /"client_pod"/ { sub(/$/, ",") }
+  /^}$/ {
+    print "  \"finished_at\": \"" finished_at "\",";
+    print "  \"client_status\": " client_status;
+  }
+  { print }
+' "$METADATA_LOG" > "$METADATA_TMP"
+mv "$METADATA_TMP" "$METADATA_LOG"
 
 CLIENT_LOG_DISPLAY="${CLIENT_LOG#$SCRIPT_DIR/}"
 SERVER_LOG_DISPLAY="${SERVER_LOG#$SCRIPT_DIR/}"

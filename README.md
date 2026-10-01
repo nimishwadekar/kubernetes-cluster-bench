@@ -35,6 +35,6 @@ Results are written under [`logs/`](./logs/):
 
 - `<run-id>-client.json`: `iperf3` JSON result
 - `<run-id>-server.log`: server output
-- `<run-id>-metadata.txt`: benchmark parameters and timestamps
+- `<run-id>-metadata.json`: benchmark parameters, resource names, and timestamps
 
 The manifest uses normal Kubernetes pod networking and a per-run Service for the server. The runner does not use `hostNetwork`.
