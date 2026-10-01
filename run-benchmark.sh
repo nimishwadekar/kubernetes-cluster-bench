@@ -24,6 +24,8 @@ SERVER_NODE=""
 IMAGE="quay.io/nwadekar/kubernetes-cluster-bench:latest"
 NAMESPACE=""
 DURATION=10
+DURATION_SET=false
+TRANSFER_SIZE=""
 PARALLEL_STREAMS=1
 TIMEOUT=120
 KEEP_RESOURCES=false
@@ -42,7 +44,8 @@ Required:
 Options:
   --image IMAGE            Benchmark image (default: quay.io/nwadekar/kubernetes-cluster-bench:latest)
   -n, --namespace NAMESPACE Kubernetes namespace (default: current context namespace)
-  --duration SECONDS       Test duration (default: 10)
+  --duration SECONDS       Test duration (default: 10; ignored with --transfer-size)
+  --transfer-size SIZE     Total data to send, such as 1G or 500M
   --parallel STREAMS       Number of parallel iperf3 streams (default: 1)
   --timeout SECONDS        Kubernetes wait timeout (default: 120)
   --run-id ID              Identifier used in pod and log names
@@ -116,6 +119,12 @@ while [ "$#" -gt 0 ]; do
     --duration)
       require_value "$@"
       DURATION=$2
+      DURATION_SET=true
+      shift 2
+      ;;
+    --transfer-size)
+      require_value "$@"
+      TRANSFER_SIZE=$2
       shift 2
       ;;
     --parallel)
@@ -164,6 +173,21 @@ fi
 is_positive_integer "$DURATION" || argument_error "--duration must be a positive integer"
 is_positive_integer "$PARALLEL_STREAMS" || argument_error "--parallel must be a positive integer"
 is_positive_integer "$TIMEOUT" || argument_error "--timeout must be a positive integer"
+if [ "$DURATION_SET" = true ] && [ -n "$TRANSFER_SIZE" ]; then
+  argument_error "--duration and --transfer-size cannot be used together"
+fi
+
+case "$TRANSFER_SIZE" in
+  '') ;;
+  *[!0-9KMGTP]*) argument_error "--transfer-size must look like 1G, 500M, or 100K" ;;
+  *[!KMGTP])
+    is_positive_integer "$TRANSFER_SIZE" || argument_error "--transfer-size must be a positive size"
+    ;;
+  *)
+    size_number=${TRANSFER_SIZE%?}
+    is_positive_integer "$size_number" || argument_error "--transfer-size must be a positive size"
+    ;;
+esac
 
 # These values are substituted into Kubernetes names or YAML scalar values.
 case "$CLIENT_NODE$SERVER_NODE" in
@@ -195,6 +219,14 @@ esac
 case "$IMAGE" in
   ''|*[!A-Za-z0-9._/@:-]*) argument_error "--image contains unsupported characters" ;;
 esac
+
+if [ "$DURATION_SET" = true ]; then
+  DURATION_DISPLAY="$DURATION seconds"
+  TRANSFER_SIZE_DISPLAY="N/A"
+else
+  DURATION_DISPLAY="N/A"
+  TRANSFER_SIZE_DISPLAY="$TRANSFER_SIZE"
+fi
 
 mkdir -p "$LOG_DIR"
 SERVER_SERVICE="network-benchmark-server-$RUN_ID"
@@ -262,7 +294,8 @@ server_node=$SERVER_NODE
 namespace=$NAMESPACE
 image=$IMAGE
 protocol=tcp
-duration_seconds=$DURATION
+duration=$DURATION_DISPLAY
+transfer_size=$TRANSFER_SIZE_DISPLAY
 parallel_streams=$PARALLEL_STREAMS
 service_name=$SERVER_SERVICE
 server_pod=$SERVER_POD
@@ -277,7 +310,8 @@ printf '  %-20s %s\n' "Server node:" "$SERVER_NODE"
 printf '  %-20s %s\n' "Namespace:" "$NAMESPACE"
 printf '  %-20s %s\n' "Image:" "$IMAGE"
 printf '  %-20s %s\n' "Protocol:" "TCP"
-printf '  %-20s %s seconds\n' "Duration:" "$DURATION"
+printf '  %-20s %s\n' "Duration:" "$DURATION_DISPLAY"
+printf '  %-20s %s\n' "Transfer size:" "$TRANSFER_SIZE_DISPLAY"
 printf '  %-20s %s\n' "Parallel streams:" "$PARALLEL_STREAMS"
 printf '\n'
 
@@ -308,7 +342,12 @@ if ! kill -0 "$SERVER_EXEC_PID" 2>/dev/null; then
 fi
 printf '%s\n' "${CYAN}Server benchmark running${RESET}"
 
-CLIENT_COMMAND="iperf3 -c $SERVER_HOST -J -t $DURATION -P $PARALLEL_STREAMS --get-server-output"
+CLIENT_COMMAND="iperf3 -c $SERVER_HOST -J -P $PARALLEL_STREAMS --get-server-output"
+if [ -n "$TRANSFER_SIZE" ]; then
+  CLIENT_COMMAND="$CLIENT_COMMAND -n $TRANSFER_SIZE"
+else
+  CLIENT_COMMAND="$CLIENT_COMMAND -t $DURATION"
+fi
 
 printf '%s\n' "${CYAN}Client benchmark running${RESET}"
 kubectl exec -n "$NAMESPACE" "$CLIENT_POD" -- sh -c "$CLIENT_COMMAND" > "$CLIENT_LOG" 2>&1 &
