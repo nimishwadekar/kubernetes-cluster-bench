@@ -27,6 +27,7 @@ metadata:
     run: __RUN_ID__
 spec:
   nodeName: __SERVER_NODE__
+  terminationGracePeriodSeconds: 5
   restartPolicy: Never
   containers:
     - name: benchmark-server
@@ -55,6 +56,7 @@ metadata:
     run: __RUN_ID__
 spec:
   nodeName: __CLIENT_NODE__
+  terminationGracePeriodSeconds: 5
   restartPolicy: Never
   containers:
     - name: benchmark-client

@@ -77,6 +77,20 @@ is_positive_integer() {
   esac
 }
 
+print_progress() {
+  local percent=$1
+  local width=30
+  local filled=$((percent * width / 100))
+  local empty=$((width - filled))
+  local filled_bar
+  local empty_bar
+
+  filled_bar=$(printf '%*s' "$filled" '' | tr ' ' '#')
+  empty_bar=$(printf '%*s' "$empty" '' | tr ' ' '.')
+  printf '\r%sClient benchmark progress: [%s%s] %3d%%%s' \
+    "$CYAN" "$filled_bar" "$empty_bar" "$percent" "$RESET"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -c|--client)
@@ -193,17 +207,39 @@ METADATA_LOG="$LOG_DIR/${RUN_ID}-metadata.txt"
 RENDERED_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/iperf3-benchmark.XXXXXX.yaml")
 APPLY_STARTED=false
 SERVER_EXEC_PID=""
+CLIENT_EXEC_PID=""
 
 cleanup() {
+  local cleanup_started cleanup_finished cleanup_duration
+
+  if [ -n "$CLIENT_EXEC_PID" ]; then
+    kill "$CLIENT_EXEC_PID" 2>/dev/null || true
+    wait "$CLIENT_EXEC_PID" 2>/dev/null || true
+    CLIENT_EXEC_PID=""
+  fi
+
   if [ -n "$SERVER_EXEC_PID" ]; then
+    printf '%s\n' "${CYAN}Stopping server benchmark session${RESET}"
     kill "$SERVER_EXEC_PID" 2>/dev/null || true
     wait "$SERVER_EXEC_PID" 2>/dev/null || true
+    SERVER_EXEC_PID=""
+    printf '%s\n' "${CYAN}Server benchmark session stopped${RESET}"
   fi
+
   if [ "$KEEP_RESOURCES" = false ] && [ "$APPLY_STARTED" = true ]; then
-    if ! kubectl delete -n "$NAMESPACE" -f "$RENDERED_MANIFEST" --ignore-not-found >/dev/null 2>&1; then
+    printf '%s\n' "${CYAN}Cleaning up benchmark resources${RESET}"
+    cleanup_started=$(date +%s)
+    if kubectl delete -n "$NAMESPACE" -f "$RENDERED_MANIFEST" --ignore-not-found; then
+      cleanup_finished=$(date +%s)
+      cleanup_duration=$((cleanup_finished - cleanup_started))
+      printf '%s\n' "${GREEN}Benchmark resources deleted (${cleanup_duration}s)${RESET}"
+    else
       printf '%s\n' "${YELLOW}warning:${RESET} failed to clean up Kubernetes resources for run $RUN_ID" >&2
     fi
+  elif [ "$KEEP_RESOURCES" = true ] && [ "$APPLY_STARTED" = true ]; then
+    printf '%s\n' "${YELLOW}Keeping benchmark resources (--keep-resources)${RESET}"
   fi
+
   rm -f "$RENDERED_MANIFEST"
 }
 trap cleanup EXIT
@@ -275,10 +311,30 @@ printf '%s\n' "${CYAN}Server benchmark running${RESET}"
 CLIENT_COMMAND="iperf3 -c $SERVER_HOST -J -t $DURATION -P $PARALLEL_STREAMS --get-server-output"
 
 printf '%s\n' "${CYAN}Client benchmark running${RESET}"
+kubectl exec -n "$NAMESPACE" "$CLIENT_POD" -- sh -c "$CLIENT_COMMAND" > "$CLIENT_LOG" 2>&1 &
+CLIENT_EXEC_PID=$!
+
+if [ -t 1 ]; then
+  progress_started=$(date +%s)
+  progress=0
+  while kill -0 "$CLIENT_EXEC_PID" 2>/dev/null; do
+    progress_now=$(date +%s)
+    progress=$(((progress_now - progress_started) * 100 / DURATION))
+    [ "$progress" -lt 99 ] || progress=99
+    print_progress "$progress"
+    sleep 1
+  done
+fi
+
 set +e
-kubectl exec -n "$NAMESPACE" "$CLIENT_POD" -- sh -c "$CLIENT_COMMAND" > "$CLIENT_LOG" 2>&1
+wait "$CLIENT_EXEC_PID"
 CLIENT_STATUS=$?
 set -e
+CLIENT_EXEC_PID=""
+if [ -t 1 ]; then
+  print_progress 100
+  printf '\n'
+fi
 
 for _ in 1 2 3 4 5; do
   kill -0 "$SERVER_EXEC_PID" 2>/dev/null || break
@@ -298,19 +354,9 @@ printf '%s\n' "  ${CYAN}Client result:${RESET} $GREEN$CLIENT_LOG_DISPLAY$RESET"
 printf '%s\n' "  ${CYAN}Server log:${RESET}    $GREEN$SERVER_LOG_DISPLAY$RESET"
 printf '%s\n' "  ${CYAN}Metadata:${RESET}      $GREEN$METADATA_LOG_DISPLAY$RESET"
 
-if [ "$CLIENT_STATUS" -eq 0 ]; then
-  if FINAL_STATS=$(awk '/receiver$/ { rate=$(NF-2) " " $(NF-1); transfer=$5 " " $6 } END { if (rate == "" || transfer == "") exit 1; print rate "\t" transfer }' "$SERVER_LOG"); then
-    IFS=$'\t' read -r FINAL_RESULT DATA_TRANSFERRED <<< "$FINAL_STATS"
-    printf '%s\n' "  ${CYAN}Throughput:${RESET}       ${GREEN}${FINAL_RESULT}${RESET}"
-    printf '%s\n' "  ${CYAN}Data transferred:${RESET} ${GREEN}${DATA_TRANSFERRED}${RESET}"
-  else
-    printf '%s\n' "  ${YELLOW}Throughput unavailable${RESET}" >&2
-  fi
-fi
-
 if [ "$CLIENT_STATUS" -ne 0 ]; then
   printf '%s\n' "${RED}benchmark failed:${RESET} client output was saved to $CLIENT_LOG" >&2
   exit 1
 fi
 
-printf '%s\n' "${GREEN}Client benchmark completed successfully${RESET}"
+printf '%s\n\n' "${GREEN}Client benchmark completed successfully${RESET}"
