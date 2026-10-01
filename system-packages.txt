@@ -1,0 +1,14 @@
+iproute2
+lshw
+pciutils
+ethtool
+net-tools
+htop
+vim
+less
+iperf
+iperf3
+tcpdump
+iputils-ping
+cpufrequtils
+numactl

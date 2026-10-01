@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: network-benchmark-server-__RUN_ID__
+  labels:
+    app: network-benchmark
+    role: server
+    run: __RUN_ID__
+spec:
+  selector:
+    app: network-benchmark
+    role: server
+    run: __RUN_ID__
+  ports:
+    - name: benchmark-tcp
+      port: 5201
+      targetPort: 5201
+      protocol: TCP
+    - name: benchmark-udp
+      port: 5201
+      targetPort: 5201
+      protocol: UDP
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-benchmark-server-__RUN_ID__
+  labels:
+    app: network-benchmark
+    role: server
+    run: __RUN_ID__
+spec:
+  nodeName: __SERVER_NODE__
+  restartPolicy: Never
+  containers:
+    - name: benchmark-server
+      image: __IMAGE__
+      imagePullPolicy: Always
+      command: ["sleep"]
+      args: ["infinity"]
+      ports:
+        - containerPort: 5201
+          protocol: TCP
+        - containerPort: 5201
+          protocol: UDP
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "2"
+          memory: "256Mi"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-benchmark-client-__RUN_ID__
+  labels:
+    app: network-benchmark
+    role: client
+    run: __RUN_ID__
+spec:
+  nodeName: __CLIENT_NODE__
+  restartPolicy: Never
+  containers:
+    - name: benchmark-client
+      image: __IMAGE__
+      imagePullPolicy: Always
+      command: ["sleep"]
+      args: ["infinity"]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "2"
+          memory: "256Mi"
