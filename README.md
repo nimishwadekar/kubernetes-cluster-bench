@@ -18,16 +18,15 @@ The runner requires `kubectl` and a configured Kubernetes context. It deploys on
 
 ```bash
 ./run-benchmark.sh \
-  --client-node worker-a \
-  --server-node worker-b
+  --client worker-a \
+  --server worker-b
 ```
 
 Useful options include:
 
-- `--protocol tcp|udp` (default: `tcp`)
+- TCP throughput testing
 - `--duration SECONDS` (default: `10`)
 - `--parallel STREAMS` (default: `1`)
-- `--bandwidth RATE` for UDP, such as `1G`
 - `--namespace NAMESPACE`
 - `--image IMAGE`
 - `--keep-resources`

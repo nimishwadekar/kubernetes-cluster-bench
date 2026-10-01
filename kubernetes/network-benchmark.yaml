@@ -16,10 +16,6 @@ spec:
       port: 5201
       targetPort: 5201
       protocol: TCP
-    - name: benchmark-udp
-      port: 5201
-      targetPort: 5201
-      protocol: UDP
 ---
 apiVersion: v1
 kind: Pod
@@ -41,8 +37,6 @@ spec:
       ports:
         - containerPort: 5201
           protocol: TCP
-        - containerPort: 5201
-          protocol: UDP
       resources:
         requests:
           cpu: "100m"

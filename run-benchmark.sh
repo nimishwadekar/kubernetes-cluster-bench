@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -t 1 ] || [ -t 2 ]; then
+  RED=$'\033[0;31m'
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[0;33m'
+  CYAN=$'\033[0;36m'
+  RESET=$'\033[0m'
+else
+  RED=""
+  GREEN=""
+  YELLOW=""
+  CYAN=""
+  RESET=""
+fi
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 MANIFEST_TEMPLATE="$SCRIPT_DIR/kubernetes/network-benchmark.yaml"
 LOG_DIR="$SCRIPT_DIR/logs"
@@ -11,28 +25,25 @@ IMAGE="quay.io/nwadekar/kubernetes-cluster-bench:latest"
 NAMESPACE=""
 DURATION=10
 PARALLEL_STREAMS=1
-PROTOCOL="tcp"
-BANDWIDTH="1G"
 TIMEOUT=120
 KEEP_RESOURCES=false
-RUN_ID="run-$(date -u +%Y%m%d%H%M%S)-$$"
+RUN_ID="run-$(date -u +%Y%m%d-%H%M%S)-$$"
 
 usage() {
   cat <<'EOF'
+
 Usage:
-  ./run-benchmark.sh --client-node NODE --server-node NODE [options]
+  ./run-benchmark.sh --client NODE --server NODE [options]
 
 Required:
-  --client-node NODE       Kubernetes node for the client pod
-  --server-node NODE       Kubernetes node for the server pod
+  -c, --client NODE        Kubernetes node for the client pod
+  -s, --server NODE        Kubernetes node for the server pod
 
 Options:
   --image IMAGE            Benchmark image (default: quay.io/nwadekar/kubernetes-cluster-bench:latest)
-  --namespace NAMESPACE    Kubernetes namespace (default: current context namespace)
+  -n, --namespace NAMESPACE Kubernetes namespace (default: current context namespace)
   --duration SECONDS       Test duration (default: 10)
   --parallel STREAMS       Number of parallel iperf3 streams (default: 1)
-  --protocol tcp|udp       Transport protocol (default: tcp)
-  --bandwidth RATE         UDP target rate, such as 1G or 500M (default: 1G)
   --timeout SECONDS        Kubernetes wait timeout (default: 120)
   --run-id ID              Identifier used in pod and log names
   --keep-resources         Keep benchmark pods and service after completion
@@ -41,15 +52,21 @@ EOF
 }
 
 fail() {
-  echo "error: $*" >&2
+  printf '%s\n' "${RED}ERROR:${RESET} $*" >&2
+  exit 2
+}
+
+argument_error() {
+  printf '%s\n' "${RED}ERROR:${RESET} $*" >&2
+  usage >&2
   exit 2
 }
 
 require_value() {
-  [ "$#" -ge 2 ] || fail "missing value for $1"
-  [ -n "$2" ] || fail "empty value for $1"
+  [ "$#" -ge 2 ] || argument_error "missing value for $1"
+  [ -n "$2" ] || argument_error "empty value for $1"
   case "$2" in
-    -*) fail "missing value for $1" ;;
+    -*) argument_error "missing value for $1" ;;
   esac
 }
 
@@ -62,12 +79,12 @@ is_positive_integer() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --client-node)
+    -c|--client)
       require_value "$@"
       CLIENT_NODE=$2
       shift 2
       ;;
-    --server-node)
+    -s|--server)
       require_value "$@"
       SERVER_NODE=$2
       shift 2
@@ -77,7 +94,7 @@ while [ "$#" -gt 0 ]; do
       IMAGE=$2
       shift 2
       ;;
-    --namespace)
+    -n|--namespace)
       require_value "$@"
       NAMESPACE=$2
       shift 2
@@ -90,16 +107,6 @@ while [ "$#" -gt 0 ]; do
     --parallel)
       require_value "$@"
       PARALLEL_STREAMS=$2
-      shift 2
-      ;;
-    --protocol)
-      require_value "$@"
-      PROTOCOL=$2
-      shift 2
-      ;;
-    --bandwidth)
-      require_value "$@"
-      BANDWIDTH=$2
       shift 2
       ;;
     --timeout)
@@ -121,63 +128,58 @@ while [ "$#" -gt 0 ]; do
       exit 0
       ;;
     *)
-      fail "unknown argument: $1"
+      argument_error "unknown argument: $1"
       ;;
   esac
 done
 
-[ -n "$CLIENT_NODE" ] || fail "--client-node is required"
-[ -n "$SERVER_NODE" ] || fail "--server-node is required"
-[ "$CLIENT_NODE" != "$SERVER_NODE" ] || fail "client and server nodes must be different"
+[ -n "$CLIENT_NODE" ] || argument_error "--client is required"
+[ -n "$SERVER_NODE" ] || argument_error "--server is required"
+[ "$CLIENT_NODE" != "$SERVER_NODE" ] || argument_error "client and server nodes must be different"
 [ -f "$MANIFEST_TEMPLATE" ] || fail "manifest not found: $MANIFEST_TEMPLATE"
 command -v kubectl >/dev/null 2>&1 || fail "kubectl is required"
+
+KUBE_CONTEXT=$(kubectl config current-context 2>/dev/null || true)
+KUBE_CONTEXT=${KUBE_CONTEXT:-unknown}
 
 if [ -z "$NAMESPACE" ]; then
   NAMESPACE=$(kubectl config view --minify --output='jsonpath={.contexts[0].context.namespace}' 2>/dev/null || true)
   NAMESPACE=${NAMESPACE:-default}
 fi
 
-case "$PROTOCOL" in
-  tcp|udp) ;;
-  *) fail "--protocol must be tcp or udp" ;;
-esac
-
-is_positive_integer "$DURATION" || fail "--duration must be a positive integer"
-is_positive_integer "$PARALLEL_STREAMS" || fail "--parallel must be a positive integer"
-is_positive_integer "$TIMEOUT" || fail "--timeout must be a positive integer"
+is_positive_integer "$DURATION" || argument_error "--duration must be a positive integer"
+is_positive_integer "$PARALLEL_STREAMS" || argument_error "--parallel must be a positive integer"
+is_positive_integer "$TIMEOUT" || argument_error "--timeout must be a positive integer"
 
 # These values are substituted into Kubernetes names or YAML scalar values.
 case "$CLIENT_NODE$SERVER_NODE" in
-  *[!a-z0-9.-]*) fail "node names may contain only lowercase letters, numbers, '.', or '-'" ;;
+  *[!a-z0-9.-]*) argument_error "node names may contain only lowercase letters, numbers, '.', or '-'" ;;
 esac
 case "$NAMESPACE" in
   [a-z0-9]*) ;;
-  *) fail "--namespace must start with a lowercase letter or number" ;;
+  *) argument_error "--namespace must start with a lowercase letter or number" ;;
 esac
 case "$NAMESPACE" in
   *[a-z0-9]) ;;
-  *) fail "--namespace must end with a lowercase letter or number" ;;
+  *) argument_error "--namespace must end with a lowercase letter or number" ;;
 esac
 case "$NAMESPACE" in
-  *[!a-z0-9-]*) fail "--namespace may contain only lowercase letters, numbers, or '-'" ;;
+  *[!a-z0-9-]*) argument_error "--namespace may contain only lowercase letters, numbers, or '-'" ;;
 esac
 case "$RUN_ID" in
   [a-z0-9]*) ;;
-  *) fail "--run-id must start with a lowercase letter or number" ;;
+  *) argument_error "--run-id must start with a lowercase letter or number" ;;
 esac
 case "$RUN_ID" in
   *[a-z0-9]) ;;
-  *) fail "--run-id must end with a lowercase letter or number" ;;
+  *) argument_error "--run-id must end with a lowercase letter or number" ;;
 esac
 case "$RUN_ID" in
-  *[!a-z0-9-]*) fail "--run-id may contain only lowercase letters, numbers, or '-'" ;;
+  *[!a-z0-9-]*) argument_error "--run-id may contain only lowercase letters, numbers, or '-'" ;;
 esac
-[ "${#RUN_ID}" -le 38 ] || fail "--run-id must be 38 characters or fewer"
+[ "${#RUN_ID}" -le 38 ] || argument_error "--run-id must be 38 characters or fewer"
 case "$IMAGE" in
-  ''|*[!A-Za-z0-9._/@:-]*) fail "--image contains unsupported characters" ;;
-esac
-case "$BANDWIDTH" in
-  ''|*[!0-9KMG]*) fail "--bandwidth must look like 1G, 500M, or 100K" ;;
+  ''|*[!A-Za-z0-9._/@:-]*) argument_error "--image contains unsupported characters" ;;
 esac
 
 mkdir -p "$LOG_DIR"
@@ -190,11 +192,16 @@ SERVER_LOG="$LOG_DIR/${RUN_ID}-server.log"
 METADATA_LOG="$LOG_DIR/${RUN_ID}-metadata.txt"
 RENDERED_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/iperf3-benchmark.XXXXXX.yaml")
 APPLY_STARTED=false
+SERVER_EXEC_PID=""
 
 cleanup() {
+  if [ -n "$SERVER_EXEC_PID" ]; then
+    kill "$SERVER_EXEC_PID" 2>/dev/null || true
+    wait "$SERVER_EXEC_PID" 2>/dev/null || true
+  fi
   if [ "$KEEP_RESOURCES" = false ] && [ "$APPLY_STARTED" = true ]; then
     if ! kubectl delete -n "$NAMESPACE" -f "$RENDERED_MANIFEST" --ignore-not-found >/dev/null 2>&1; then
-      echo "warning: failed to clean up Kubernetes resources for run $RUN_ID" >&2
+      printf '%s\n' "${YELLOW}warning:${RESET} failed to clean up Kubernetes resources for run $RUN_ID" >&2
     fi
   fi
   rm -f "$RENDERED_MANIFEST"
@@ -208,22 +215,35 @@ sed \
   -e "s|__IMAGE__|$IMAGE|g" \
   -e "s|__DURATION__|$DURATION|g" \
   -e "s|__PARALLEL_STREAMS__|$PARALLEL_STREAMS|g" \
-  -e "s|__PROTOCOL__|$PROTOCOL|g" \
-  -e "s|__BANDWIDTH__|$BANDWIDTH|g" \
   "$MANIFEST_TEMPLATE" > "$RENDERED_MANIFEST"
 
 cat > "$METADATA_LOG" <<EOF
 run_id=$RUN_ID
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+kube_context=$KUBE_CONTEXT
 client_node=$CLIENT_NODE
 server_node=$SERVER_NODE
 namespace=$NAMESPACE
 image=$IMAGE
-protocol=$PROTOCOL
+protocol=tcp
 duration_seconds=$DURATION
 parallel_streams=$PARALLEL_STREAMS
-udp_bandwidth=$BANDWIDTH
+service_name=$SERVER_SERVICE
+server_pod=$SERVER_POD
+client_pod=$CLIENT_POD
 EOF
+
+printf '\n%s\n' "${CYAN}Benchmark configuration${RESET}"
+printf '  %-20s %s\n' "Run ID:" "$RUN_ID"
+printf '  %-20s %s\n' "Kubernetes context:" "$KUBE_CONTEXT"
+printf '  %-20s %s\n' "Client node:" "$CLIENT_NODE"
+printf '  %-20s %s\n' "Server node:" "$SERVER_NODE"
+printf '  %-20s %s\n' "Namespace:" "$NAMESPACE"
+printf '  %-20s %s\n' "Image:" "$IMAGE"
+printf '  %-20s %s\n' "Protocol:" "TCP"
+printf '  %-20s %s seconds\n' "Duration:" "$DURATION"
+printf '  %-20s %s\n' "Parallel streams:" "$PARALLEL_STREAMS"
+printf '\n'
 
 for resource in "service/$SERVER_SERVICE" "pod/$SERVER_POD" "pod/$CLIENT_POD"; do
   if kubectl get -n "$NAMESPACE" "$resource" >/dev/null 2>&1; then
@@ -232,33 +252,65 @@ for resource in "service/$SERVER_SERVICE" "pod/$SERVER_POD" "pod/$CLIENT_POD"; d
 done
 
 APPLY_STARTED=true
-kubectl apply -n "$NAMESPACE" -f "$RENDERED_MANIFEST"
-kubectl wait -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Running "pod/$SERVER_POD" --timeout="${TIMEOUT}s"
-kubectl wait -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Running "pod/$CLIENT_POD" --timeout="${TIMEOUT}s"
+kubectl apply -n "$NAMESPACE" -f "$RENDERED_MANIFEST" >/dev/null
+printf '%s\n' "${CYAN}Network service created${RESET}"
+kubectl wait -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Running "pod/$SERVER_POD" --timeout="${TIMEOUT}s" >/dev/null
+printf '%s\n' "${CYAN}Server pod running${RESET}"
+kubectl wait -n "$NAMESPACE" --for=jsonpath='{.status.phase}'=Running "pod/$CLIENT_POD" --timeout="${TIMEOUT}s" >/dev/null
+printf '%s\n' "${CYAN}Client pod running${RESET}"
 
 # The manifest only starts long-running containers. Run the selected benchmark inside them.
-kubectl exec -n "$NAMESPACE" "$SERVER_POD" -- sh -c \
-  'iperf3 -s --one-off > /tmp/network-benchmark-server.log 2>&1 &' 
+# Keep the exec session attached so the server process is not killed when a remote
+# background shell exits; server output is captured directly to the local log.
+kubectl exec -n "$NAMESPACE" "$SERVER_POD" -- iperf3 -s --one-off > "$SERVER_LOG" 2>&1 &
+SERVER_EXEC_PID=$!
 sleep 2
+if ! kill -0 "$SERVER_EXEC_PID" 2>/dev/null; then
+  wait "$SERVER_EXEC_PID" 2>/dev/null || true
+  SERVER_EXEC_PID=""
+  fail "iperf3 server failed to start; see $SERVER_LOG"
+fi
+printf '%s\n' "${CYAN}Server benchmark running${RESET}"
 
 CLIENT_COMMAND="iperf3 -c $SERVER_HOST -J -t $DURATION -P $PARALLEL_STREAMS --get-server-output"
-if [ "$PROTOCOL" = "udp" ]; then
-  CLIENT_COMMAND="$CLIENT_COMMAND -u -b $BANDWIDTH"
-fi
 
+printf '%s\n' "${CYAN}Client benchmark running${RESET}"
 set +e
 kubectl exec -n "$NAMESPACE" "$CLIENT_POD" -- sh -c "$CLIENT_COMMAND" > "$CLIENT_LOG" 2>&1
 CLIENT_STATUS=$?
 set -e
 
-kubectl exec -n "$NAMESPACE" "$SERVER_POD" -- cat /tmp/network-benchmark-server.log > "$SERVER_LOG" 2>&1 || true
+for _ in 1 2 3 4 5; do
+  kill -0 "$SERVER_EXEC_PID" 2>/dev/null || break
+  sleep 0.2
+done
+kill "$SERVER_EXEC_PID" 2>/dev/null || true
+wait "$SERVER_EXEC_PID" 2>/dev/null || true
+SERVER_EXEC_PID=""
+
 printf 'finished_at=%s\nclient_status=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CLIENT_STATUS" >> "$METADATA_LOG"
 
-echo "Client result: $CLIENT_LOG"
-echo "Server log:     $SERVER_LOG"
-echo "Metadata:       $METADATA_LOG"
+CLIENT_LOG_DISPLAY="${CLIENT_LOG#$SCRIPT_DIR/}"
+SERVER_LOG_DISPLAY="${SERVER_LOG#$SCRIPT_DIR/}"
+METADATA_LOG_DISPLAY="${METADATA_LOG#$SCRIPT_DIR/}"
+printf '\n%s\n' "${CYAN}Results${RESET}"
+printf '%s\n' "  ${CYAN}Client result:${RESET} $GREEN$CLIENT_LOG_DISPLAY$RESET"
+printf '%s\n' "  ${CYAN}Server log:${RESET}    $GREEN$SERVER_LOG_DISPLAY$RESET"
+printf '%s\n' "  ${CYAN}Metadata:${RESET}      $GREEN$METADATA_LOG_DISPLAY$RESET"
+
+if [ "$CLIENT_STATUS" -eq 0 ]; then
+  if FINAL_STATS=$(awk '/receiver$/ { rate=$(NF-2) " " $(NF-1); transfer=$5 " " $6 } END { if (rate == "" || transfer == "") exit 1; print rate "\t" transfer }' "$SERVER_LOG"); then
+    IFS=$'\t' read -r FINAL_RESULT DATA_TRANSFERRED <<< "$FINAL_STATS"
+    printf '%s\n' "  ${CYAN}Throughput:${RESET}       ${GREEN}${FINAL_RESULT}${RESET}"
+    printf '%s\n' "  ${CYAN}Data transferred:${RESET} ${GREEN}${DATA_TRANSFERRED}${RESET}"
+  else
+    printf '%s\n' "  ${YELLOW}Throughput unavailable${RESET}" >&2
+  fi
+fi
 
 if [ "$CLIENT_STATUS" -ne 0 ]; then
-  echo "benchmark failed; client output was saved to $CLIENT_LOG" >&2
+  printf '%s\n' "${RED}benchmark failed:${RESET} client output was saved to $CLIENT_LOG" >&2
   exit 1
 fi
+
+printf '%s\n' "${GREEN}Client benchmark completed successfully${RESET}"
