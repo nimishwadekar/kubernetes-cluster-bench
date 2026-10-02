@@ -38,3 +38,29 @@ Results are written under [`logs/`](./logs/):
 - `<run-id>-metadata.json`: benchmark parameters, resource names, and timestamps
 
 The manifest uses normal Kubernetes pod networking and a per-run Service for the server. The runner does not use `hostNetwork`.
+
+## Plot benchmark results
+
+Install the Python plotting dependency:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Plot all metadata results in [`logs/`](./logs/):
+
+```bash
+./plot-benchmark.sh --x transfer_size --y throughput_gbps
+```
+
+You can also select metadata files explicitly:
+
+```bash
+./plot-benchmark.sh \
+  --logs-dir logs \
+  --x parallel_streams \
+  --y throughput_gbps \
+  --output graphs/throughput.png
+```
+
+Available X-axis parameters include `transfer_size`, `duration`, and `parallel_streams`. Available Y-axis metrics include receiver throughput, received bytes, transfer duration, retransmissions, and CPU utilization.

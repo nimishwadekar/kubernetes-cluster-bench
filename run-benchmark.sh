@@ -176,6 +176,9 @@ is_positive_integer "$TIMEOUT" || argument_error "--timeout must be a positive i
 if [ "$DURATION_SET" = true ] && [ -n "$TRANSFER_SIZE" ]; then
   argument_error "--duration and --transfer-size cannot be used together"
 fi
+if [ -z "$TRANSFER_SIZE" ]; then
+  DURATION_SET=true
+fi
 
 case "$TRANSFER_SIZE" in
   '') ;;
