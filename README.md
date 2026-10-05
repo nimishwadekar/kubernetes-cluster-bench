@@ -26,7 +26,7 @@ Useful options include:
 
 - TCP throughput testing
 - `--duration SECONDS` (default: `10`)
-- `--parallel STREAMS` (default: `1`)
+- `--parallel SPEC` (default: `1`), where `SPEC` is `N`, `START:END`, or `START:END:STEP`; ranges run one benchmark per stream count, inclusively and sequentially using the same pod pair. Range runs append `-pSTREAMS` to result and metadata filenames.
 - `--logs-dir DIR` (default: `logs/`)
 - `--namespace NAMESPACE`
 - `--image IMAGE`

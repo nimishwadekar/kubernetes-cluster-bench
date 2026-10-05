@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +32,14 @@ class RunPaths:
     rendered_manifest: Path
 
 
+@dataclass
+class BenchmarkIteration:
+    config: BenchmarkConfig
+    paths: RunPaths
+    metadata: Metadata
+    finalized: bool = False
+
+
 def _run_paths(config: BenchmarkConfig) -> RunPaths:
     log_dir = Path(config.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -41,6 +49,34 @@ def _run_paths(config: BenchmarkConfig) -> RunPaths:
         server_log=log_dir / f"{config.run_id}-server.log",
         metadata_log=log_dir / f"{config.run_id}-metadata.json",
         rendered_manifest=create_rendered_manifest(),
+    )
+
+
+def _iteration_config(config: BenchmarkConfig, stream_count: int) -> BenchmarkConfig:
+    run_id = (
+        config.run_id
+        if config.parallel_spec.is_single
+        else f"{config.run_id}-p{stream_count}"
+    )
+    return replace(
+        config,
+        parallel_streams=stream_count,
+        parallel_streams_text=(
+            config.parallel_streams_text
+            if config.parallel_spec.is_single
+            else str(stream_count)
+        ),
+        run_id=run_id,
+    )
+
+
+def _iteration_paths(config: BenchmarkConfig, shared_paths: RunPaths) -> RunPaths:
+    return RunPaths(
+        log_dir=shared_paths.log_dir,
+        client_log=shared_paths.log_dir / f"{config.run_id}-client.json",
+        server_log=shared_paths.server_log,
+        metadata_log=shared_paths.log_dir / f"{config.run_id}-metadata.json",
+        rendered_manifest=shared_paths.rendered_manifest,
     )
 
 
@@ -205,32 +241,42 @@ def _write_results(
 
 
 def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) -> int:
-    """Deploy, execute, collect, and clean up one benchmark run."""
+    """Deploy one pod pair and execute all requested stream-count benchmarks."""
 
     duration_display = f"{config.duration_text} seconds" if config.duration_set else "N/A"
     transfer_size_display = "N/A" if config.duration_set else config.transfer_size or ""
     paths = _run_paths(config)
     resources = ResourceNames.from_run_id(config.run_id)
+    iterations: list[BenchmarkIteration] = []
     apply_started = False
     server_process: subprocess.Popen[bytes] | None = None
     client_process: subprocess.Popen[bytes] | None = None
-    metadata: Metadata | None = None
-    metadata_finalized = False
     run_status = 1
 
     try:
         render_manifest(config, paths.rendered_manifest)
-        metadata = initial_metadata(
-            config,
-            resources,
-            kube_context,
-            duration_display,
-            transfer_size_display,
-            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
-        write_json_metadata(paths.metadata_log, metadata)
-        print_configuration(config, kube_context, duration_display, transfer_size_display, colors)
+        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for stream_count in config.parallel_spec.values:
+            iteration_config = _iteration_config(config, stream_count)
+            iteration_paths = _iteration_paths(iteration_config, paths)
+            iteration_metadata = initial_metadata(
+                iteration_config,
+                resources,
+                kube_context,
+                duration_display,
+                transfer_size_display,
+                started_at,
+            )
+            write_json_metadata(iteration_paths.metadata_log, iteration_metadata)
+            iterations.append(
+                BenchmarkIteration(
+                    config=iteration_config,
+                    paths=iteration_paths,
+                    metadata=iteration_metadata,
+                )
+            )
 
+        print_configuration(config, kube_context, duration_display, transfer_size_display, colors)
         _check_for_collisions(resources, config, colors)
         apply_started = True
         run_checked(
@@ -242,55 +288,61 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
         print(f"{colors.cyan}Server and client pods running{colors.reset}")
 
         server_process = _start_server(config, resources, paths.server_log, colors)
-        client_command = _client_command(config, resources)
-        print(f"{colors.cyan}Client benchmark running{colors.reset}")
-        with paths.client_log.open("wb") as client_log_handle:
-            client_process = subprocess.Popen(
-                client_command,
-                stdout=client_log_handle,
-                stderr=subprocess.STDOUT,
-            )
+        for iteration in iterations:
+            print(f"{colors.cyan}Client benchmark running{colors.reset}")
+            with iteration.paths.client_log.open("wb") as client_log_handle:
+                client_process = subprocess.Popen(
+                    _client_command(iteration.config, resources),
+                    stdout=client_log_handle,
+                    stderr=subprocess.STDOUT,
+                )
 
-        client_status_raw = _wait_for_client(client_process, config, colors)
-        client_status = client_status_raw if client_status_raw >= 0 else 128 + (-client_status_raw)
-        client_process = None
-        terminate_process(server_process)
-        server_process = None
-        run_status = client_status
-        _write_results(
-            metadata,
-            paths.metadata_log,
-            client_status,
-            paths.client_log,
-            paths.server_log,
-            colors,
-        )
-        metadata_finalized = True
-
-        if client_status != 0:
-            print(
-                f"{colors.red}benchmark failed:{colors.reset} client output was saved to "
-                f"{paths.client_log}",
-                file=sys.stderr,
+            client_status_raw = _wait_for_client(
+                client_process, iteration.config, colors
             )
-            return 1
+            client_status = (
+                client_status_raw
+                if client_status_raw >= 0
+                else 128 + (-client_status_raw)
+            )
+            client_process = None
+            run_status = client_status
+            _write_results(
+                iteration.metadata,
+                iteration.paths.metadata_log,
+                client_status,
+                iteration.paths.client_log,
+                iteration.paths.server_log,
+                colors,
+            )
+            iteration.finalized = True
+
+            if client_status != 0:
+                print(
+                    f"{colors.red}benchmark failed:{colors.reset} client output was saved to "
+                    f"{iteration.paths.client_log}",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"{colors.green}Client benchmark completed successfully{colors.reset}\n")
+
         run_status = 0
-        print(f"{colors.green}Client benchmark completed successfully{colors.reset}\n")
         return 0
     except BenchmarkExit as error:
         run_status = error.code
         raise
     finally:
-        if metadata is not None and not metadata_finalized:
-            _write_results(
-                metadata,
-                paths.metadata_log,
-                run_status,
-                paths.client_log,
-                paths.server_log,
-                colors,
-                display_results=False,
-            )
+        for iteration in iterations:
+            if not iteration.finalized:
+                _write_results(
+                    iteration.metadata,
+                    iteration.paths.metadata_log,
+                    run_status,
+                    iteration.paths.client_log,
+                    iteration.paths.server_log,
+                    colors,
+                    display_results=False,
+                )
         cleanup_resources(
             client_process,
             server_process,

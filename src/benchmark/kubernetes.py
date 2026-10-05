@@ -151,6 +151,8 @@ def start_server_process(
     server_pod: str,
     server_log: Path,
 ) -> subprocess.Popen[bytes]:
+    """Start a persistent iperf3 server for repeated client benchmarks."""
+
     with server_log.open("wb") as server_log_handle:
         return subprocess.Popen(
             [
@@ -162,7 +164,6 @@ def start_server_process(
                 "--",
                 "iperf3",
                 "-s",
-                "--one-off",
             ],
             stdout=server_log_handle,
             stderr=subprocess.STDOUT,

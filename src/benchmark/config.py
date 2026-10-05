@@ -54,7 +54,8 @@ Options:
   -n, --namespace NAMESPACE Kubernetes namespace (default: current context namespace)
   --duration SECONDS       Test duration (default: 10; ignored with --transfer-size)
   --transfer-size SIZE     Total data to send, such as 1G or 500M
-  --parallel STREAMS       Number of parallel iperf3 streams (default: 1)
+  --parallel SPEC          Parallel streams: N, START:END, or START:END:STEP (default: 1)
+                             Ranges run one benchmark per value using the same pods.
   --timeout SECONDS        Kubernetes wait timeout (default: 120)
   --run-id ID              Identifier used in pod and log names
   --keep-resources         Keep benchmark pods and service after completion
@@ -81,6 +82,23 @@ class ParsedConfig:
 
 
 @dataclass(frozen=True)
+class ParallelSpec:
+    """Inclusive parallel-stream values requested by the user."""
+
+    start: int
+    end: int
+    step: int
+
+    @property
+    def values(self) -> range:
+        return range(self.start, self.end + 1, self.step)
+
+    @property
+    def is_single(self) -> bool:
+        return self.start + self.step > self.end
+
+
+@dataclass(frozen=True)
 class BenchmarkConfig:
     """Validated settings used by one benchmark run."""
 
@@ -94,6 +112,7 @@ class BenchmarkConfig:
     transfer_size: str | None
     parallel_streams: int
     parallel_streams_text: str
+    parallel_spec: ParallelSpec
     timeout: int
     timeout_text: str
     keep_resources: bool
@@ -234,6 +253,23 @@ def is_positive_integer(value: str) -> bool:
         return False
 
 
+def parse_parallel_spec(value: str) -> ParallelSpec | None:
+    """Parse N, START:END, or START:END:STEP into an inclusive range."""
+
+    parts = value.split(":")
+    if len(parts) not in (1, 2, 3) or any(
+        not is_positive_integer(part) for part in parts
+    ):
+        return None
+
+    start = int(parts[0])
+    end = start if len(parts) == 1 else int(parts[1])
+    step = 1 if len(parts) < 3 else int(parts[2])
+    if start > end:
+        return None
+    return ParallelSpec(start=start, end=end, step=step)
+
+
 def _valid_dns_subdomain(value: str, max_length: int) -> bool:
     if len(value) > max_length:
         return False
@@ -269,8 +305,13 @@ def validate_initial_config(config: ParsedConfig, colors: Colors) -> None:
 def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> BenchmarkConfig:
     if not is_positive_integer(config.duration_text):
         argument_error("--duration must be a positive integer", colors)
-    if not is_positive_integer(config.parallel_streams_text):
-        argument_error("--parallel must be a positive integer", colors)
+    parallel_spec = parse_parallel_spec(config.parallel_streams_text)
+    if parallel_spec is None:
+        argument_error(
+            "--parallel must be N, START:END, or START:END:STEP with positive values "
+            "and START <= END",
+            colors,
+        )
     if not is_positive_integer(config.timeout_text):
         argument_error("--timeout must be a positive integer", colors)
     if config.duration_set and config.transfer_size is not None:
@@ -309,8 +350,9 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
         duration_text=config.duration_text,
         duration_set=config.duration_set or transfer_size is None,
         transfer_size=transfer_size,
-        parallel_streams=int(config.parallel_streams_text),
+        parallel_streams=parallel_spec.start,
         parallel_streams_text=config.parallel_streams_text,
+        parallel_spec=parallel_spec,
         timeout=int(config.timeout_text),
         timeout_text=config.timeout_text,
         keep_resources=config.keep_resources,
