@@ -164,6 +164,7 @@ def start_server_process(
                 "--",
                 "iperf3",
                 "-s",
+                "-J",
             ],
             stdout=server_log_handle,
             stderr=subprocess.STDOUT,

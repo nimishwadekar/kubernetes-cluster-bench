@@ -46,7 +46,7 @@ def _run_paths(config: BenchmarkConfig) -> RunPaths:
     return RunPaths(
         log_dir=log_dir,
         client_log=log_dir / f"{config.run_id}-client.json",
-        server_log=log_dir / f"{config.run_id}-server.log",
+        server_log=log_dir / f"{config.run_id}-server.json",
         metadata_log=log_dir / f"{config.run_id}-metadata.json",
         rendered_manifest=create_rendered_manifest(),
     )

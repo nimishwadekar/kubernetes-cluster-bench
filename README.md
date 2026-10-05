@@ -34,8 +34,8 @@ Useful options include:
 
 Results are written under the selected log directory:
 
-- `<run-id>-client.json`: `iperf3` JSON result
-- `<run-id>-server.log`: server output
+- `<run-id>-client.json`: `iperf3` JSON result, including structured server output for the completed test
+- `<run-id>-server.json`: JSON server output, with one result per completed client test
 - `<run-id>-metadata.json`: benchmark parameters, resource names, and timestamps
 
 The manifest uses normal Kubernetes pod networking and a per-run Service for the server. The runner does not use `hostNetwork`.
