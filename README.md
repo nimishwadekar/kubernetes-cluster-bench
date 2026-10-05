@@ -27,11 +27,12 @@ Useful options include:
 - TCP throughput testing
 - `--duration SECONDS` (default: `10`)
 - `--parallel STREAMS` (default: `1`)
+- `--logs-dir DIR` (default: `logs/`)
 - `--namespace NAMESPACE`
 - `--image IMAGE`
 - `--keep-resources`
 
-Results are written under [`logs/`](./logs/):
+Results are written under the selected log directory:
 
 - `<run-id>-client.json`: `iperf3` JSON result
 - `<run-id>-server.log`: server output

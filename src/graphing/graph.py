@@ -8,7 +8,7 @@ from typing import Sequence
 
 import matplotlib.pyplot as plt
 
-from .console import warning
+from ..common.console import warning
 from .data import BenchmarkRecord
 
 

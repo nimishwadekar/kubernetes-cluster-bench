@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn, Sequence
 
-from .console import colored_options, format_error, warning
+from ..common.console import colored_options, format_error, warning
 from .data import BenchmarkRecord, load_benchmark_record
 from .graph import GraphContext, XParameter, YMetric, plot_benchmarks
 
