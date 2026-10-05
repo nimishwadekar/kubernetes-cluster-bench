@@ -72,12 +72,20 @@ def kubectl_output(arguments: Sequence[str]) -> str:
 def populate_context_namespace(config_namespace: str) -> tuple[str, str]:
     """Read the current context and resolve the default namespace."""
 
-    context = kubectl_output(["config", "current-context"])
+    try:
+        context = kubectl_output(["config", "current-context"]) or "unknown"
+    except KubectlError:
+        context = "unknown"
+
     namespace = config_namespace
     if not namespace:
-        namespace = kubectl_output(
-            ["config", "view", "--minify", "--output=jsonpath={.contexts[0].context.namespace}"]
-        ) or "default"
+        try:
+            namespace = kubectl_output(
+                ["config", "view", "--minify", "--output=jsonpath={.contexts[0].context.namespace}"]
+            )
+        except KubectlError:
+            namespace = ""
+        namespace = namespace or "default"
     return context, namespace
 
 

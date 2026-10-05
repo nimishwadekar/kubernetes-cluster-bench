@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..common.console import Colors
-from .config import BenchmarkConfig, PROJECT_ROOT, PROGRESS_WIDTH, fail
+from .config import BenchmarkConfig, BenchmarkExit, PROJECT_ROOT, PROGRESS_WIDTH, fail
 from .kubernetes import (
     ResourceNames,
     cleanup_resources,
@@ -183,23 +183,25 @@ def _write_results(
     client_log: Path,
     server_log: Path,
     colors: Colors,
+    display_results: bool = True,
 ) -> None:
     metadata["finished_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     metadata["client_status"] = client_status
     write_json_metadata(metadata_log, metadata)
-    print(f"\n{colors.cyan}Results{colors.reset}")
-    print(
-        f"  {colors.cyan}Client result:{colors.reset} "
-        f"{colors.green}{display_path(client_log)}{colors.reset}"
-    )
-    print(
-        f"  {colors.cyan}Server log:{colors.reset}    "
-        f"{colors.green}{display_path(server_log)}{colors.reset}"
-    )
-    print(
-        f"  {colors.cyan}Metadata:{colors.reset}      "
-        f"{colors.green}{display_path(metadata_log)}{colors.reset}"
-    )
+    if display_results:
+        print(f"\n{colors.cyan}Results{colors.reset}")
+        print(
+            f"  {colors.cyan}Client result:{colors.reset} "
+            f"{colors.green}{display_path(client_log)}{colors.reset}"
+        )
+        print(
+            f"  {colors.cyan}Server log:{colors.reset}    "
+            f"{colors.green}{display_path(server_log)}{colors.reset}"
+        )
+        print(
+            f"  {colors.cyan}Metadata:{colors.reset}      "
+            f"{colors.green}{display_path(metadata_log)}{colors.reset}"
+        )
 
 
 def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) -> int:
@@ -212,6 +214,9 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
     apply_started = False
     server_process: subprocess.Popen[bytes] | None = None
     client_process: subprocess.Popen[bytes] | None = None
+    metadata: Metadata | None = None
+    metadata_finalized = False
+    run_status = 1
 
     try:
         render_manifest(config, paths.rendered_manifest)
@@ -251,6 +256,7 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
         client_process = None
         terminate_process(server_process)
         server_process = None
+        run_status = client_status
         _write_results(
             metadata,
             paths.metadata_log,
@@ -259,6 +265,7 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
             paths.server_log,
             colors,
         )
+        metadata_finalized = True
 
         if client_status != 0:
             print(
@@ -267,9 +274,23 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
                 file=sys.stderr,
             )
             return 1
+        run_status = 0
         print(f"{colors.green}Client benchmark completed successfully{colors.reset}\n")
         return 0
+    except BenchmarkExit as error:
+        run_status = error.code
+        raise
     finally:
+        if metadata is not None and not metadata_finalized:
+            _write_results(
+                metadata,
+                paths.metadata_log,
+                run_status,
+                paths.client_log,
+                paths.server_log,
+                colors,
+                display_results=False,
+            )
         cleanup_resources(
             client_process,
             server_process,
