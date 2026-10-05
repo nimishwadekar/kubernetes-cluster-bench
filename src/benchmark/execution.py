@@ -52,19 +52,19 @@ def _run_paths(config: BenchmarkConfig) -> RunPaths:
     )
 
 
-def _iteration_config(config: BenchmarkConfig, stream_count: int) -> BenchmarkConfig:
+def _iteration_config(config: BenchmarkConfig, thread_count: int) -> BenchmarkConfig:
     run_id = (
         config.run_id
-        if config.parallel_spec.is_single
-        else f"{config.run_id}-p{stream_count}"
+        if config.thread_spec.is_single
+        else f"{config.run_id}-t{thread_count}"
     )
     return replace(
         config,
-        parallel_streams=stream_count,
-        parallel_streams_text=(
-            config.parallel_streams_text
-            if config.parallel_spec.is_single
-            else str(stream_count)
+        threads=thread_count,
+        threads_text=(
+            config.threads_text
+            if config.thread_spec.is_single
+            else str(thread_count)
         ),
         run_id=run_id,
     )
@@ -122,7 +122,7 @@ def print_configuration(
     print(f"  {'Protocol:':<20} TCP")
     print(f"  {'Duration:':<20} {duration_display}")
     print(f"  {'Transfer size:':<20} {transfer_size_display}")
-    print(f"  {'Parallel streams:':<20} {config.parallel_streams_text}\n")
+    print(f"  {'Threads:':<20} {config.threads_text}\n")
 
 
 def _wait_for_client(
@@ -150,7 +150,10 @@ def _check_for_collisions(
 ) -> None:
     for resource in resources.collision_targets:
         if resource_exists(resource, config.namespace):
-            fail(f"resource already exists: {resource}; choose a different --run-id", colors)
+            fail(
+                f"resource already exists: {resource}; retry with a clean namespace",
+                colors,
+            )
 
 
 def _wait_for_pods(config: BenchmarkConfig, resources: ResourceNames) -> None:
@@ -181,7 +184,7 @@ def _client_command(config: BenchmarkConfig, resources: ResourceNames) -> list[s
         resources.server_host,
         "-J",
         "-P",
-        str(config.parallel_streams),
+        str(config.threads),
         "--get-server-output",
     ]
     command.extend(
@@ -241,7 +244,7 @@ def _write_results(
 
 
 def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) -> int:
-    """Deploy one pod pair and execute all requested stream-count benchmarks."""
+    """Deploy one pod pair and execute all requested thread-count benchmarks."""
 
     duration_display = f"{config.duration_text} seconds" if config.duration_set else "N/A"
     transfer_size_display = "N/A" if config.duration_set else config.transfer_size or ""
@@ -256,8 +259,8 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
     try:
         render_manifest(config, paths.rendered_manifest)
         started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for stream_count in config.parallel_spec.values:
-            iteration_config = _iteration_config(config, stream_count)
+        for thread_count in config.thread_spec.values:
+            iteration_config = _iteration_config(config, thread_count)
             iteration_paths = _iteration_paths(iteration_config, paths)
             iteration_metadata = initial_metadata(
                 iteration_config,

@@ -24,7 +24,7 @@ class Metadata:
     duration_seconds: int | None
     transfer_size: str | None
     transfer_size_bytes: int | None
-    parallel_streams: int
+    threads: int
     service_name: str
     server_pod: str
     client_pod: str
@@ -41,7 +41,7 @@ class ClientBenchmark:
     sent_bytes: int | None
     test_duration_seconds: float | None
     retransmits: int | None
-    stream_count: int | None
+    thread_count: int | None
     mean_rtt_us: float | None
     host_cpu_percent: float | None
     remote_cpu_percent: float | None
@@ -163,7 +163,7 @@ def load_metadata(path: Path) -> Metadata:
         duration_seconds=_duration_seconds(root.get("duration")),
         transfer_size=transfer_size,
         transfer_size_bytes=_optional_size_bytes(transfer_size),
-        parallel_streams=_int(root.get("parallel_streams"), "parallel_streams"),
+        threads=_int(root.get("threads", root.get("parallel_streams")), "threads"),
         service_name=_string(root.get("service_name"), "service_name"),
         server_pod=_string(root.get("server_pod"), "server_pod"),
         client_pod=_string(root.get("client_pod"), "client_pod"),
@@ -174,14 +174,14 @@ def load_metadata(path: Path) -> Metadata:
 
 
 def _mean_rtt_us(end: JsonObject) -> float | None:
-    streams_value = end.get("streams")
-    if not isinstance(streams_value, list):
+    threads_value = end.get("streams")
+    if not isinstance(threads_value, list):
         return None
-    stream_values = cast(list[object], streams_value)
+    thread_values = cast(list[object], threads_value)
     rtts: list[float] = []
-    for stream_value in stream_values:
-        stream = _object(stream_value, "end.streams item")
-        sender = stream.get("sender")
+    for thread_value in thread_values:
+        thread = _object(thread_value, "end.streams item")
+        sender = thread.get("sender")
         if not isinstance(sender, dict):
             continue
         sender_object = cast(JsonObject, sender)
@@ -213,7 +213,7 @@ def load_client_benchmark(path: Path) -> ClientBenchmark:
             sum_received.get("seconds"), "end.sum_received.seconds"
         ),
         retransmits=_optional_int(sum_sent.get("retransmits"), "end.sum_sent.retransmits"),
-        stream_count=_optional_int(test_start.get("num_streams"), "start.test_start.num_streams"),
+        thread_count=_optional_int(test_start.get("num_streams"), "start.test_start.num_streams"),
         mean_rtt_us=_mean_rtt_us(end),
         host_cpu_percent=_optional_float(
             cpu.get("host_total"), "end.cpu_utilization_percent.host_total"

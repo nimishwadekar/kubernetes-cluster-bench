@@ -26,8 +26,8 @@ Useful options include:
 
 - TCP throughput testing
 - `--duration SECONDS` (default: `10`)
-- `--parallel SPEC` (default: `1`), where `SPEC` is `N`, `START:END`, or `START:END:STEP`; ranges run one benchmark per stream count, inclusively and sequentially using the same pod pair. Range runs append `-pSTREAMS` to result and metadata filenames.
-- `--logs-dir DIR` (default: `logs/`)
+- `--threads SPEC` (default: `1`), using `start[:end[:step]]`; for example, `4`, `1:4`, or `1:5:2`. Ranges run sequential benchmarks using the same pod pair and append `-tTHREADS` to result and metadata filenames.
+- `-d, --dir DIR` (default: `<PWD>/logs`)
 - `--namespace NAMESPACE`
 - `--image IMAGE`
 - `--keep-resources`
@@ -51,17 +51,17 @@ python3 -m pip install -r requirements.txt
 Plot all metadata results in [`logs/`](./logs/):
 
 ```bash
-./plot-benchmark.sh --x transfer_size --y throughput_gbps
+./plot-benchmark.sh --x transfer_size
 ```
 
 You can also select metadata files explicitly:
 
 ```bash
 ./plot-benchmark.sh \
-  --logs-dir logs \
-  --x parallel_streams \
-  --y throughput_gbps \
+  --dir logs \
+  --x threads \
+  --y throughput \
   --output graphs/throughput.png
 ```
 
-Available X-axis parameters include `transfer_size`, `duration`, and `parallel_streams`. Available Y-axis metrics include receiver throughput, received bytes, transfer duration, retransmissions, and CPU utilization.
+Available X-axis parameters are `transfer_size` and `threads`. Available Y-axis metrics are `throughput`, `retransmits`, and `client_cpu_util`.

@@ -21,11 +21,13 @@ def main(arguments: Sequence[str]) -> int:
 
     colors = terminal_colors(sys.stdout, sys.stderr)
     try:
-        parsed: ParsedConfig = parse_arguments(arguments, colors)
+        parsed: ParsedConfig = parse_arguments(arguments)
         validate_initial_config(parsed, colors)
         kube_context, namespace = populate_context_namespace(parsed.namespace)
         config = validate_config(parsed, namespace, colors)
         return run_benchmark(config, kube_context, colors)
+    except SystemExit as error:
+        return int(error.code) if isinstance(error.code, int) else 1
     except BenchmarkExit as error:
         return error.code
     except subprocess.CalledProcessError as error:

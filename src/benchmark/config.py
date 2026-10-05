@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn, Sequence, TextIO
+from typing import NoReturn, Sequence
 
 from ..common.console import Colors
 
@@ -18,50 +18,10 @@ MANIFEST_TEMPLATE = PROJECT_ROOT / "network-benchmark.yaml"
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_IMAGE = "quay.io/nwadekar/kubernetes-cluster-bench:latest"
 DEFAULT_DURATION = "10"
-DEFAULT_PARALLEL_STREAMS = "1"
+DEFAULT_THREADS = "1"
 DEFAULT_TIMEOUT = "120"
 RUN_ID_LIMIT = 38
 PROGRESS_WIDTH = 30
-
-VALUE_OPTIONS: tuple[str, ...] = (
-    "-c",
-    "--client",
-    "-s",
-    "--server",
-    "--image",
-    "-l",
-    "--logs-dir",
-    "-n",
-    "--namespace",
-    "--duration",
-    "--transfer-size",
-    "--parallel",
-    "--timeout",
-    "--run-id",
-)
-
-USAGE: str = """
-Usage:
-  ./run-benchmark.sh --client NODE --server NODE [options]
-
-Required:
-  -c, --client NODE        Kubernetes node for the client pod
-  -s, --server NODE        Kubernetes node for the server pod
-
-Options:
-  --image IMAGE            Benchmark image (default: quay.io/nwadekar/kubernetes-cluster-bench:latest)
-  -l, --logs-dir DIR       Directory for benchmark logs (default: repository logs directory)
-  -n, --namespace NAMESPACE Kubernetes namespace (default: current context namespace)
-  --duration SECONDS       Test duration (default: 10; ignored with --transfer-size)
-  --transfer-size SIZE     Total data to send, such as 1G or 500M
-  --parallel SPEC          Parallel streams: N, START:END, or START:END:STEP (default: 1)
-                             Ranges run one benchmark per value using the same pods.
-  --timeout SECONDS        Kubernetes wait timeout (default: 120)
-  --run-id ID              Identifier used in pod and log names
-  --keep-resources         Keep benchmark pods and service after completion
-  -h, --help               Show this help
-"""
-
 
 @dataclass(frozen=True)
 class ParsedConfig:
@@ -74,7 +34,7 @@ class ParsedConfig:
     duration_text: str
     duration_set: bool
     transfer_size: str | None
-    parallel_streams_text: str
+    threads_text: str
     timeout_text: str
     keep_resources: bool
     run_id: str
@@ -82,8 +42,8 @@ class ParsedConfig:
 
 
 @dataclass(frozen=True)
-class ParallelSpec:
-    """Inclusive parallel-stream values requested by the user."""
+class ThreadSpec:
+    """Inclusive thread-count values requested by the user."""
 
     start: int
     end: int
@@ -110,9 +70,9 @@ class BenchmarkConfig:
     duration_text: str
     duration_set: bool
     transfer_size: str | None
-    parallel_streams: int
-    parallel_streams_text: str
-    parallel_spec: ParallelSpec
+    threads: int
+    threads_text: str
+    thread_spec: ThreadSpec
     timeout: int
     timeout_text: str
     keep_resources: bool
@@ -128,32 +88,13 @@ class BenchmarkExit(Exception):
         self.code = code
 
 
-class RunnerArgumentParser(argparse.ArgumentParser):
-    """Argument parser that preserves the wrapper's help and error surface."""
-
-    def __init__(self, colors: Colors) -> None:
-        super().__init__(add_help=False, allow_abbrev=False)
-        self.colors = colors
-
-    def format_help(self) -> str:
-        return USAGE
+class BenchmarkArgumentParser(argparse.ArgumentParser):
+    """Argparse parser that includes full help text for parse errors."""
 
     def error(self, message: str) -> NoReturn:
-        prefix = "unrecognized arguments: "
-        if message.startswith(prefix):
-            unknown = message[len(prefix) :].split()[0]
-            argument_error(f"unknown argument: {unknown}", self.colors)
-        argument_error(message, self.colors)
-
-    def exit(self, status: int = 0, message: str | None = None) -> NoReturn:
-        del message
-        raise BenchmarkExit(0 if status == 0 else status)
-
-
-def usage(stream: TextIO) -> None:
-    """Print the command usage text."""
-
-    print(USAGE, file=stream, end="")
+        self._print_message(f"{self.prog}: error: {message}\n\n", sys.stderr)
+        self.print_help(sys.stderr)
+        self.exit(2)
 
 
 def fail(message: str, colors: Colors) -> NoReturn:
@@ -164,81 +105,90 @@ def fail(message: str, colors: Colors) -> NoReturn:
 
 
 def argument_error(message: str, colors: Colors) -> NoReturn:
-    """Print an argument error, usage, and return shell status two."""
+    """Report a validated argument error after argparse has parsed the CLI."""
 
     print(f"{colors.red}ERROR:{colors.reset} {message}", file=sys.stderr)
-    usage(sys.stderr)
     raise BenchmarkExit(2)
-
-
-def validate_option_values(arguments: Sequence[str], colors: Colors) -> None:
-    """Reject missing option values before argparse produces its own wording."""
-
-    index = 0
-    while index < len(arguments):
-        option = arguments[index]
-        if option in ("-h", "--help"):
-            return
-        if option == "--":
-            argument_error("unknown argument: --", colors)
-        if option in VALUE_OPTIONS:
-            if index + 1 >= len(arguments):
-                argument_error(f"missing value for {option}", colors)
-            value = arguments[index + 1]
-            if not value:
-                argument_error(f"empty value for {option}", colors)
-            if value.startswith("-"):
-                argument_error(f"missing value for {option}", colors)
-            index += 2
-            continue
-        if option == "--keep-resources":
-            index += 1
-            continue
-        argument_error(f"unknown argument: {option}", colors)
 
 
 def utc_timestamp(format_string: str) -> str:
     return datetime.now(timezone.utc).strftime(format_string)
 
 
-def make_parser(colors: Colors) -> RunnerArgumentParser:
-    parser = RunnerArgumentParser(colors)
-    parser.add_argument("-c", "--client", default="")
-    parser.add_argument("-s", "--server", default="")
-    parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("-l", "--logs-dir", default=str(DEFAULT_LOG_DIR))
-    parser.add_argument("-n", "--namespace", default="")
-    parser.add_argument("--duration", default=DEFAULT_DURATION)
-    parser.add_argument("--transfer-size", default=None)
-    parser.add_argument("--parallel", default=DEFAULT_PARALLEL_STREAMS)
-    parser.add_argument("--timeout", default=DEFAULT_TIMEOUT)
-    parser.add_argument("--run-id", default=f"run-{utc_timestamp('%Y%m%d-%H%M%S')}-{os.getpid()}")
-    parser.add_argument("--keep-resources", action="store_true", default=False)
-    parser.add_argument("-h", "--help", action="help")
+def make_parser() -> argparse.ArgumentParser:
+    parser = BenchmarkArgumentParser(
+        prog="./run-benchmark.sh",
+        usage="%(prog)s --client NODE --server NODE [options]",
+        description="Run an iperf3 network benchmark between two Kubernetes nodes.",
+        formatter_class=argparse.HelpFormatter,
+        add_help=False,
+        allow_abbrev=False,
+    )
+    required = parser.add_argument_group("Required")
+    options = parser.add_argument_group("Options")
+    required.add_argument(
+        "-c", "--client", required=True, metavar="NODE",
+        help="Kubernetes node for the client pod",
+    )
+    required.add_argument(
+        "-s", "--server", required=True, metavar="NODE",
+        help="Kubernetes node for the server pod",
+    )
+    options.add_argument(
+        "--image", default=DEFAULT_IMAGE, metavar="IMAGE",
+        help=f"Benchmark image (default: {DEFAULT_IMAGE})",
+    )
+    options.add_argument(
+        "-d", "--dir", dest="log_dir", default=str(DEFAULT_LOG_DIR), metavar="DIR",
+        help="Directory for benchmark logs (default: <PWD>/logs)",
+    )
+    options.add_argument(
+        "-n", "--namespace", default="", metavar="NAMESPACE",
+        help="Kubernetes namespace (default: current context namespace)",
+    )
+    options.add_argument(
+        "--duration", default=None, metavar="SECONDS",
+        help="Test duration (default: 10; cannot be used with --transfer-size)",
+    )
+    options.add_argument(
+        "--transfer-size", default=None, metavar="SIZE",
+        help="Total data to send, such as 1G or 500M",
+    )
+    options.add_argument(
+        "--threads", default=DEFAULT_THREADS, metavar="start[:end[:step]]",
+        help="Thread counts (default: 1). Examples: 4; 1:4; 1:5:2",
+    )
+    options.add_argument(
+        "--timeout", default=DEFAULT_TIMEOUT, metavar="SECONDS",
+        help="Kubernetes wait timeout (default: 120)",
+    )
+    parser.set_defaults(run_id=f"run-{utc_timestamp('%Y%m%d-%H%M%S')}-{os.getpid()}")
+    options.add_argument(
+        "--keep-resources", action="store_true",
+        help="Keep benchmark pods and service after completion",
+    )
+    options.add_argument(
+        "-h", "--help", action="help", help="Show this help message and exit",
+    )
     return parser
 
 
-def parse_arguments(arguments: Sequence[str], colors: Colors) -> ParsedConfig:
-    validate_option_values(arguments, colors)
-    parser = make_parser(colors)
-    parsed, extras = parser.parse_known_args(list(arguments))
-    if extras:
-        argument_error(f"unknown argument: {extras[0]}", colors)
-
-    transfer_value = getattr(parsed, "transfer_size")
+def parse_arguments(arguments: Sequence[str]) -> ParsedConfig:
+    parsed = make_parser().parse_args(list(arguments))
+    duration_value = parsed.duration
     return ParsedConfig(
-        client_node=str(getattr(parsed, "client")),
-        server_node=str(getattr(parsed, "server")),
-        image=str(getattr(parsed, "image")),
-        namespace=str(getattr(parsed, "namespace")),
-        duration_text=str(getattr(parsed, "duration")),
-        duration_set="--duration" in arguments,
-        transfer_size=None if transfer_value is None else str(transfer_value),
-        parallel_streams_text=str(getattr(parsed, "parallel")),
-        timeout_text=str(getattr(parsed, "timeout")),
-        keep_resources=bool(getattr(parsed, "keep_resources")),
-        run_id=str(getattr(parsed, "run_id")),
-        log_dir=str(getattr(parsed, "logs_dir")),
+        client_node=parsed.client,
+        server_node=parsed.server,
+        image=parsed.image,
+        namespace=parsed.namespace,
+        duration_text=duration_value or DEFAULT_DURATION,
+        duration_set=duration_value is not None,
+        transfer_size=parsed.transfer_size,
+        threads_text=parsed.threads,
+        timeout_text=parsed.timeout,
+        keep_resources=parsed.keep_resources,
+        run_id=parsed.run_id,
+        log_dir=parsed.log_dir,
     )
 
 
@@ -253,8 +203,8 @@ def is_positive_integer(value: str) -> bool:
         return False
 
 
-def parse_parallel_spec(value: str) -> ParallelSpec | None:
-    """Parse N, START:END, or START:END:STEP into an inclusive range."""
+def parse_thread_spec(value: str) -> ThreadSpec | None:
+    """Parse start[:end[:step]] into an inclusive thread-count range."""
 
     parts = value.split(":")
     if len(parts) not in (1, 2, 3) or any(
@@ -267,7 +217,7 @@ def parse_parallel_spec(value: str) -> ParallelSpec | None:
     step = 1 if len(parts) < 3 else int(parts[2])
     if start > end:
         return None
-    return ParallelSpec(start=start, end=end, step=step)
+    return ThreadSpec(start=start, end=end, step=step)
 
 
 def _valid_dns_subdomain(value: str, max_length: int) -> bool:
@@ -305,11 +255,10 @@ def validate_initial_config(config: ParsedConfig, colors: Colors) -> None:
 def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> BenchmarkConfig:
     if not is_positive_integer(config.duration_text):
         argument_error("--duration must be a positive integer", colors)
-    parallel_spec = parse_parallel_spec(config.parallel_streams_text)
-    if parallel_spec is None:
+    thread_spec = parse_thread_spec(config.threads_text)
+    if thread_spec is None:
         argument_error(
-            "--parallel must be N, START:END, or START:END:STEP with positive values "
-            "and START <= END",
+            "--threads must use start[:end[:step]] with positive values and start <= end",
             colors,
         )
     if not is_positive_integer(config.timeout_text):
@@ -350,9 +299,9 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
         duration_text=config.duration_text,
         duration_set=config.duration_set or transfer_size is None,
         transfer_size=transfer_size,
-        parallel_streams=parallel_spec.start,
-        parallel_streams_text=config.parallel_streams_text,
-        parallel_spec=parallel_spec,
+        threads=thread_spec.start,
+        threads_text=config.threads_text,
+        thread_spec=thread_spec,
         timeout=int(config.timeout_text),
         timeout_text=config.timeout_text,
         keep_resources=config.keep_resources,

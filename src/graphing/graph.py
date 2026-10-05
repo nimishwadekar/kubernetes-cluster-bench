@@ -14,40 +14,28 @@ from .data import BenchmarkRecord
 
 class XParameter(StrEnum):
     TRANSFER_SIZE = "transfer_size"
-    DURATION = "duration"
-    PARALLEL_STREAMS = "parallel_streams"
+    THREADS = "threads"
 
     def label(self) -> str:
         if self is XParameter.TRANSFER_SIZE:
             return "Transfer size"
-        if self is XParameter.DURATION:
-            return "Duration (seconds)"
-        if self is XParameter.PARALLEL_STREAMS:
-            return "Parallel TCP streams"
+        if self is XParameter.THREADS:
+            return "Threads"
         raise ValueError(f"unsupported X-axis parameter: {self}")
 
 
 class YMetric(StrEnum):
-    THROUGHPUT_GBPS = "throughput_gbps"
-    RECEIVED_BYTES_GIB = "received_bytes_gib"
-    TRANSFER_DURATION_SECONDS = "transfer_duration_seconds"
+    THROUGHPUT = "throughput"
     RETRANSMITS = "retransmits"
-    CLIENT_CPU_UTILIZATION = "client_cpu_utilization"
-    SERVER_CPU_UTILIZATION = "server_cpu_utilization"
+    CLIENT_CPU_UTIL = "client_cpu_util"
 
     def label(self) -> str:
-        if self is YMetric.THROUGHPUT_GBPS:
+        if self is YMetric.THROUGHPUT:
             return "Receiver throughput (Gbit/s)"
-        if self is YMetric.RECEIVED_BYTES_GIB:
-            return "Received data (GiB)"
-        if self is YMetric.TRANSFER_DURATION_SECONDS:
-            return "Transfer duration (seconds)"
         if self is YMetric.RETRANSMITS:
             return "TCP retransmissions"
-        if self is YMetric.CLIENT_CPU_UTILIZATION:
+        if self is YMetric.CLIENT_CPU_UTIL:
             return "Client CPU utilization (%)"
-        if self is YMetric.SERVER_CPU_UTILIZATION:
-            return "Server CPU utilization (%)"
         raise ValueError(f"unsupported Y-axis metric: {self}")
 
 
@@ -63,33 +51,24 @@ def _x_value(record: BenchmarkRecord, parameter: XParameter) -> tuple[float | No
     metadata = record.metadata
     if parameter is XParameter.TRANSFER_SIZE:
         return metadata.transfer_size_bytes, metadata.transfer_size or "N/A"
-    if parameter is XParameter.DURATION:
-        value = metadata.duration_seconds
-        return (float(value), str(value)) if value is not None else (None, "N/A")
-    if parameter is XParameter.PARALLEL_STREAMS:
-        value = metadata.parallel_streams
+    if parameter is XParameter.THREADS:
+        value = metadata.threads
         return float(value), str(value)
     raise ValueError(f"unsupported X-axis parameter: {parameter}")
 
 
 def _y_value(record: BenchmarkRecord, metric: YMetric) -> float | None:
     client = record.client
-    if metric is YMetric.THROUGHPUT_GBPS:
+    if metric is YMetric.THROUGHPUT:
         return (
             client.receiver_throughput_bps / 1e9
             if client.receiver_throughput_bps is not None
             else None
         )
-    if metric is YMetric.RECEIVED_BYTES_GIB:
-        return client.received_bytes / 2**30 if client.received_bytes is not None else None
-    if metric is YMetric.TRANSFER_DURATION_SECONDS:
-        return client.test_duration_seconds
     if metric is YMetric.RETRANSMITS:
         return float(client.retransmits) if client.retransmits is not None else None
-    if metric is YMetric.CLIENT_CPU_UTILIZATION:
+    if metric is YMetric.CLIENT_CPU_UTIL:
         return client.host_cpu_percent
-    if metric is YMetric.SERVER_CPU_UTILIZATION:
-        return client.remote_cpu_percent
     raise ValueError(f"unsupported Y-axis metric: {metric}")
 
 

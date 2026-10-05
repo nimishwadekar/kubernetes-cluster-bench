@@ -48,7 +48,7 @@ def initial_metadata(
         "protocol": "TCP",
         "duration": duration_display,
         "transfer_size": transfer_size_display,
-        "parallel_streams": config.parallel_streams,
+        "threads": config.threads,
         "service_name": resources.server_service,
         "server_pod": resources.server_pod,
         "client_pod": resources.client_pod,

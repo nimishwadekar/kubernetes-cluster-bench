@@ -12,7 +12,7 @@ from .graph import GraphContext, XParameter, YMetric, plot_benchmarks
 
 def usage() -> str:
     return (
-        "%(prog)s --x PARAM --y METRIC [--logs-dir DIR]\n"
+        "%(prog)s --x PARAM [--y METRIC] [--dir DIR]\n"
         "       [--output FILE] [--title TITLE]"
     )
 
@@ -38,6 +38,7 @@ def build_parser() -> UsageArgumentParser:
         formatter_class=BenchmarkHelpFormatter,
     )
     parser.add_argument(
+        "-x",
         "--x",
         dest="x_parameter",
         type=XParameter,
@@ -51,20 +52,23 @@ def build_parser() -> UsageArgumentParser:
         ),
     )
     parser.add_argument(
+        "-y",
         "--y",
         dest="y_metric",
         type=YMetric,
         choices=tuple(YMetric),
-        required=True,
+        default=YMetric.THROUGHPUT,
         metavar="METRIC",
         help=(
-            "Metric for the Y axis. Options: "
+            "Metric for the Y axis (default: throughput). Options: "
             + colored_options(tuple(metric.value for metric in YMetric), sys.stdout)
             + "."
         ),
     )
     parser.add_argument(
-        "--logs-dir",
+        "-d",
+        "--dir",
+        dest="directory",
         type=Path,
         default=Path("logs"),
         metavar="DIR",
@@ -75,7 +79,7 @@ def build_parser() -> UsageArgumentParser:
         type=Path,
         default=None,
         metavar="FILE",
-        help="Output image path (default: <logs-dir>/graphs/benchmark.png).",
+        help="Output image path (default: <dir>/graphs/<y>-<x>.png).",
     )
     parser.add_argument(
         "--title",
@@ -87,8 +91,8 @@ def build_parser() -> UsageArgumentParser:
 
 
 def metadata_paths(args: argparse.Namespace) -> list[Path]:
-    logs_dir: Path = args.logs_dir
-    return sorted(logs_dir.glob("*-metadata.json"))
+    directory: Path = args.directory
+    return sorted(directory.glob("*-metadata.json"))
 
 
 def load_records(paths: Sequence[Path]) -> list[BenchmarkRecord]:
@@ -103,8 +107,8 @@ def load_records(paths: Sequence[Path]) -> list[BenchmarkRecord]:
 def validate_records(records: Sequence[BenchmarkRecord]) -> None:
     unsuccessful: list[str] = []
     non_finite_labels = {
-        "host_cpu_percent": "client_cpu_utilization",
-        "remote_cpu_percent": "server_cpu_utilization",
+        "host_cpu_percent": "client_cpu_util",
+        "remote_cpu_percent": "remote_cpu_util",
     }
     for record in records:
         if record.metadata.trailing_content:
@@ -137,8 +141,10 @@ def main() -> int:
     try:
         records = load_records(metadata_paths(args))
         validate_records(records)
-        logs_dir: Path = args.logs_dir
-        output_path: Path = args.output or logs_dir / "graphs" / "benchmark.png"
+        directory: Path = args.directory
+        output_path: Path = args.output or directory / "graphs" / (
+            f"{args.y_metric.value}-{args.x_parameter.value}.png"
+        )
         context = GraphContext(
             x_parameter=args.x_parameter,
             y_metric=args.y_metric,
