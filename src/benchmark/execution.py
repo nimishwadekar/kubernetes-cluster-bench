@@ -167,8 +167,7 @@ def _start_server(
         wait_for_server_start(
             server_process,
             config.namespace,
-            resources.client_pod,
-            resources.server_host,
+            resources.server_pod,
             timeout=float(config.timeout),
         )
     except (RuntimeError, TimeoutError):

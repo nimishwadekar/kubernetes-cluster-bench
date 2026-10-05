@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import signal
 import subprocess
 import sys
@@ -153,6 +154,7 @@ def start_server_process(
                 "--",
                 "iperf3",
                 "-s",
+                "--one-off",
             ],
             stdout=server_log_handle,
             stderr=subprocess.STDOUT,
@@ -162,11 +164,10 @@ def start_server_process(
 def wait_for_server_start(
     process: subprocess.Popen[bytes],
     namespace: str,
-    client_pod: str,
-    server_host: str,
+    server_pod: str,
     timeout: float,
 ) -> None:
-    """Probe the service until iperf3 accepts connections or startup times out."""
+    """Poll the server pod socket without creating benchmark traffic."""
 
     deadline = time.monotonic() + timeout
     probe = [
@@ -174,13 +175,10 @@ def wait_for_server_start(
         "exec",
         "-n",
         namespace,
-        client_pod,
+        server_pod,
         "--",
-        "iperf3",
-        "-c",
-        server_host,
-        "-n",
-        "1K",
+        "ss",
+        "-ltn",
     ]
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -190,14 +188,15 @@ def wait_for_server_start(
         try:
             result = subprocess.run(
                 probe,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                text=True,
                 check=False,
                 timeout=min(2.0, remaining),
             )
         except subprocess.TimeoutExpired:
             continue
-        if result.returncode == 0:
+        if result.returncode == 0 and re.search(r":5201(?:\s|$)", result.stdout):
             return
         time.sleep(0.2)
     raise TimeoutError("timed out waiting for iperf3 server readiness")
