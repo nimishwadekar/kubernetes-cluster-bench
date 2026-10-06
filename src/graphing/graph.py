@@ -57,18 +57,22 @@ def _x_value(record: BenchmarkRecord, parameter: XParameter) -> tuple[float | No
     raise ValueError(f"unsupported X-axis parameter: {parameter}")
 
 
-def _y_value(record: BenchmarkRecord, metric: YMetric) -> float | None:
+def _y_value_and_error(
+    record: BenchmarkRecord, metric: YMetric
+) -> tuple[float | None, tuple[float, float] | None]:
     client = record.client
     if metric is YMetric.THROUGHPUT:
-        return (
-            client.receiver_throughput_bps / 1e9
-            if client.receiver_throughput_bps is not None
-            else None
-        )
+        mean_bps = client.server_throughput_mean_bps
+        standard_deviation_bps = client.server_throughput_stddev_bps
+        if mean_bps is None or standard_deviation_bps is None:
+            return None, None
+        standard_deviation = standard_deviation_bps / 1e9
+        return mean_bps / 1e9, (standard_deviation, standard_deviation)
     if metric is YMetric.RETRANSMITS:
-        return float(client.retransmits) if client.retransmits is not None else None
+        value = float(client.retransmits) if client.retransmits is not None else None
+        return value, None
     if metric is YMetric.CLIENT_CPU_UTIL:
-        return client.host_cpu_percent
+        return client.host_cpu_percent, None
     raise ValueError(f"unsupported Y-axis metric: {metric}")
 
 
@@ -77,23 +81,28 @@ def _run_id_lines(run_ids: Sequence[str]) -> str:
 
 
 def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -> Path:
-    points: list[tuple[float, str, float]] = []
+    points: list[tuple[float, str, float, tuple[float, float] | None]] = []
     x_missing_run_ids: list[str] = []
     y_missing_run_ids: list[str] = []
     non_finite_run_ids: list[str] = []
 
     for record in records:
-        y_value = _y_value(record, context.y_metric)
+        y_value, y_error = _y_value_and_error(record, context.y_metric)
         x_value, x_label = _x_value(record, context.x_parameter)
+        y_is_non_finite = y_value is not None and not math.isfinite(y_value)
+        if y_error is not None:
+            y_is_non_finite = y_is_non_finite or not all(
+                math.isfinite(error) for error in y_error
+            )
         if x_value is None:
             x_missing_run_ids.append(record.metadata.run_id)
         if y_value is None:
             y_missing_run_ids.append(record.metadata.run_id)
-        if y_value is not None and not math.isfinite(y_value):
+        if y_is_non_finite:
             non_finite_run_ids.append(record.metadata.run_id)
-        if x_value is None or y_value is None or not math.isfinite(y_value):
+        if x_value is None or y_value is None or y_is_non_finite:
             continue
-        points.append((x_value, x_label, y_value))
+        points.append((x_value, x_label, y_value, y_error))
 
     if x_missing_run_ids:
         warning(
@@ -125,10 +134,26 @@ def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -
 
     figure = plt.figure(figsize=(10, 6))
     axes = figure.gca()
-    axes.plot(x_values, y_values, marker="o", linewidth=1.5, markersize=6)
-    highest_y = max(y_values)
+    if context.y_metric is YMetric.THROUGHPUT:
+        lower_errors = [point[3][0] for point in points if point[3] is not None]
+        upper_errors = [point[3][1] for point in points if point[3] is not None]
+        axes.errorbar(
+            x_values,
+            y_values,
+            yerr=[lower_errors, upper_errors],
+            fmt="-o",
+            linewidth=1.5,
+            markersize=6,
+            capsize=4,
+        )
+    else:
+        axes.plot(x_values, y_values, marker="o", linewidth=1.5, markersize=6)
+    highest_y = max(
+        point[2] + (point[3][1] if point[3] is not None else 0.0)
+        for point in points
+    )
     y_padding = highest_y * 0.1 if highest_y > 0 else 1.0
-    axes.set_ylim(top=highest_y + y_padding)
+    axes.set_ylim(bottom=0, top=highest_y + y_padding)
     axes.set_xlabel(context.x_parameter.label())
     axes.set_ylabel(context.y_metric.label())
     axes.set_title(context.title or f"{context.y_metric.label()} by {context.x_parameter.label()}")
@@ -136,6 +161,8 @@ def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -
 
     if context.x_parameter is XParameter.TRANSFER_SIZE:
         axes.set_xticks(x_values, labels)
+    elif context.x_parameter is XParameter.THREADS:
+        axes.set_xlim(left=0)
 
     figure.tight_layout()
     context.output_path.parent.mkdir(parents=True, exist_ok=True)

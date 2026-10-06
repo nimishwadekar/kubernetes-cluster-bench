@@ -64,4 +64,4 @@ You can also select metadata files explicitly:
   --output graphs/throughput.png
 ```
 
-Available X-axis parameters are `transfer_size` and `threads`. Available Y-axis metrics are `throughput`, `retransmits`, and `client_cpu_util`.
+Available X-axis parameters are `transfer_size` and `threads`. Available Y-axis metrics are `throughput`, `retransmits`, and `client_cpu_util`. Throughput points use the mean of server per-interval sum bitrates at least 0.5 seconds long, with standard-deviation error bars.
