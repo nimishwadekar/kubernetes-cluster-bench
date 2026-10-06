@@ -18,6 +18,7 @@ MANIFEST_TEMPLATE = PROJECT_ROOT / "network-benchmark.yaml"
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 DEFAULT_IMAGE = "quay.io/nwadekar/kubernetes-cluster-bench:latest"
 DEFAULT_DURATION = "10"
+DEFAULT_WARMUP = "5"
 DEFAULT_THREADS = "1"
 DEFAULT_TIMEOUT = "120"
 RUN_ID_LIMIT = 38
@@ -33,6 +34,8 @@ class ParsedConfig:
     namespace: str
     duration_text: str
     duration_set: bool
+    warmup_text: str
+    warmup_set: bool
     transfer_size: str | None
     threads_text: str
     timeout_text: str
@@ -69,6 +72,8 @@ class BenchmarkConfig:
     duration: int
     duration_text: str
     duration_set: bool
+    warmup: int
+    warmup_text: str
     transfer_size: str | None
     threads: int
     threads_text: str
@@ -155,6 +160,10 @@ def make_parser() -> argparse.ArgumentParser:
         help="Total data to send, such as 1G or 500M",
     )
     options.add_argument(
+        "--warmup", default=None, metavar="SECONDS",
+        help="Warmup time before measurement (default: 5; duration tests only)",
+    )
+    options.add_argument(
         "--threads", default=DEFAULT_THREADS, metavar="start[:end[:step]]",
         help="Thread counts (default: 1). Examples: 4; 1:4; 1:5:2",
     )
@@ -183,6 +192,8 @@ def parse_arguments(arguments: Sequence[str]) -> ParsedConfig:
         namespace=parsed.namespace,
         duration_text=duration_value or DEFAULT_DURATION,
         duration_set=duration_value is not None,
+        warmup_text=parsed.warmup or DEFAULT_WARMUP,
+        warmup_set=parsed.warmup is not None,
         transfer_size=parsed.transfer_size,
         threads_text=parsed.threads,
         timeout_text=parsed.timeout,
@@ -199,6 +210,17 @@ def is_positive_integer(value: str) -> bool:
         return False
     try:
         return int(value) > 0
+    except ValueError:
+        return False
+
+
+def is_nonnegative_integer(value: str) -> bool:
+    """Return whether value is decimal and convertible to a non-negative integer."""
+
+    if not value or not value.isascii() or not value.isdecimal():
+        return False
+    try:
+        return int(value) >= 0
     except ValueError:
         return False
 
@@ -255,6 +277,8 @@ def validate_initial_config(config: ParsedConfig, colors: Colors) -> None:
 def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> BenchmarkConfig:
     if not is_positive_integer(config.duration_text):
         argument_error("--duration must be a positive integer", colors)
+    if not is_nonnegative_integer(config.warmup_text):
+        argument_error("--warmup must be a non-negative integer", colors)
     thread_spec = parse_thread_spec(config.threads_text)
     if thread_spec is None:
         argument_error(
@@ -265,6 +289,8 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
         argument_error("--timeout must be a positive integer", colors)
     if config.duration_set and config.transfer_size is not None:
         argument_error("--duration and --transfer-size cannot be used together", colors)
+    if config.warmup_set and config.transfer_size is not None:
+        argument_error("--warmup requires --duration", colors)
 
     transfer_size = config.transfer_size
     if transfer_size is not None:
@@ -298,6 +324,8 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
         duration=int(config.duration_text),
         duration_text=config.duration_text,
         duration_set=config.duration_set or transfer_size is None,
+        warmup=int(config.warmup_text),
+        warmup_text=config.warmup_text,
         transfer_size=transfer_size,
         threads=thread_spec.start,
         threads_text=config.threads_text,

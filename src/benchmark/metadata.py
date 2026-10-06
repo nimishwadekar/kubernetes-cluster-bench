@@ -47,6 +47,7 @@ def initial_metadata(
         "image": config.image,
         "protocol": "TCP",
         "duration": duration_display,
+        "warmup": config.warmup if config.duration_set else 0,
         "transfer_size": transfer_size_display,
         "threads": config.threads,
         "service_name": resources.server_service,

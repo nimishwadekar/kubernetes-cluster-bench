@@ -10,6 +10,7 @@ from typing import Mapping, cast
 
 JsonObject = Mapping[str, object]
 MIN_THROUGHPUT_INTERVAL_SECONDS = 0.5
+MAX_THROUGHPUT_INTERVAL_DURATION_MISMATCH_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class Metadata:
     image: str
     protocol: str
     duration_seconds: int | None
+    warmup_seconds: int | None
     transfer_size: str | None
     transfer_size_bytes: int | None
     threads: int
@@ -165,6 +167,7 @@ def load_metadata(path: Path) -> Metadata:
         image=_string(root.get("image"), "image"),
         protocol=_string(root.get("protocol"), "protocol"),
         duration_seconds=_duration_seconds(root.get("duration")),
+        warmup_seconds=_optional_int(root.get("warmup"), "warmup"),
         transfer_size=transfer_size,
         transfer_size_bytes=_optional_size_bytes(transfer_size),
         threads=_int(root.get("threads", root.get("parallel_streams")), "threads"),
@@ -212,6 +215,17 @@ def _server_throughput_stats(
         interval_sum = _object(
             interval.get("sum"), f"server_output_json.intervals[{index}].sum"
         )
+        omitted = interval_sum.get("omitted")
+        if omitted is True:
+            continue
+        start = _optional_float(
+            interval_sum.get("start"),
+            f"server_output_json.intervals[{index}].sum.start",
+        )
+        end = _optional_float(
+            interval_sum.get("end"),
+            f"server_output_json.intervals[{index}].sum.end",
+        )
         seconds = _optional_float(
             interval_sum.get("seconds"),
             f"server_output_json.intervals[{index}].sum.seconds",
@@ -221,8 +235,13 @@ def _server_throughput_stats(
             f"server_output_json.intervals[{index}].sum.bits_per_second",
         )
         if (
-            seconds is not None
+            start is not None
+            and end is not None
+            and seconds is not None
+            and end >= start
             and seconds >= MIN_THROUGHPUT_INTERVAL_SECONDS
+            and abs(seconds - (end - start))
+            <= MAX_THROUGHPUT_INTERVAL_DURATION_MISMATCH_SECONDS
             and bits_per_second is not None
         ):
             values.append(bits_per_second)

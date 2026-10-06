@@ -121,6 +121,8 @@ def print_configuration(
     print(f"  {'Image:':<20} {config.image}")
     print(f"  {'Protocol:':<20} TCP")
     print(f"  {'Duration:':<20} {duration_display}")
+    if config.duration_set:
+        print(f"  {'Warmup:':<20} {config.warmup_text} seconds")
     print(f"  {'Transfer size:':<20} {transfer_size_display}")
     print(f"  {'Threads:':<20} {config.threads_text}\n")
 
@@ -134,7 +136,8 @@ def _wait_for_client(
     started = time.monotonic()
     while client_process.poll() is None:
         elapsed = time.monotonic() - started
-        progress = min(int(elapsed * 100 / config.duration), 99)
+        total_duration = config.duration + config.warmup
+        progress = min(int(elapsed * 100 / total_duration), 99)
         print_progress(progress, colors)
         time.sleep(1)
 
@@ -187,11 +190,12 @@ def _client_command(config: BenchmarkConfig, resources: ResourceNames) -> list[s
         str(config.threads),
         "--get-server-output",
     ]
-    command.extend(
-        ["-n", config.transfer_size]
-        if config.transfer_size is not None
-        else ["-t", str(config.duration)]
-    )
+    if config.transfer_size is not None:
+        command.extend(["-n", config.transfer_size])
+    else:
+        command.extend(
+            ["-t", str(config.duration + config.warmup), "-O", str(config.warmup)]
+        )
     return command
 
 
