@@ -91,14 +91,28 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-def print_progress(percent: int, colors: Colors) -> None:
-    """Print the command's progress bar."""
+def _format_eta(seconds: float) -> str:
+    """Format an estimated remaining duration for progress output."""
 
-    filled = percent * PROGRESS_WIDTH // 100
+    remaining = max(0, int(round(seconds)))
+    minutes, seconds = divmod(remaining, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def print_progress(percent: float, colors: Colors) -> None:
+    """Print the command's current-run progress bar."""
+
+    bounded_percent = min(max(percent, 0.0), 100.0)
+    filled = int(bounded_percent * PROGRESS_WIDTH / 100)
     empty = PROGRESS_WIDTH - filled
     print(
-        f"\r{colors.cyan}Client benchmark progress: [{'#' * filled}{'.' * empty}] "
-        f"{percent:3d}%{colors.reset}",
+        f"\r{colors.cyan}Current run progress: [{'#' * filled}{'.' * empty}] "
+        f"{bounded_percent:3.0f}%{colors.reset}",
         end="",
         flush=True,
     )
@@ -131,22 +145,37 @@ def print_configuration(
 
 
 def _wait_for_client(
-    client_process: subprocess.Popen[bytes], config: BenchmarkConfig, colors: Colors
+    client_process: subprocess.Popen[bytes],
+    config: BenchmarkConfig,
+    colors: Colors,
+    completed_runs: int,
+    total_runs: int,
+    benchmark_started: float,
 ) -> int:
     if not sys.stdout.isatty() or not config.duration_set:
         return client_process.wait()
 
     started = time.monotonic()
+    total_duration = config.duration + config.warmup
+    elapsed_total = time.monotonic() - benchmark_started
+    eta_seconds = (
+        elapsed_total / completed_runs * (total_runs - completed_runs)
+        if completed_runs > 0
+        else total_duration * total_runs
+    )
+    print(
+        f"{colors.cyan}Estimated time remaining: "
+        f"{_format_eta(eta_seconds)}{colors.reset}"
+    )
     while client_process.poll() is None:
         elapsed = time.monotonic() - started
-        total_duration = config.duration + config.warmup
-        progress = min(int(elapsed * 100 / total_duration), 99)
-        print_progress(progress, colors)
+        current_run_fraction = min(elapsed / total_duration, 1.0)
+        print_progress(current_run_fraction * 100, colors)
         time.sleep(1)
 
     status = client_process.wait()
     if status == 0:
-        print_progress(100, colors)
+        print_progress(100.0, colors)
     print()
     return status
 
@@ -302,6 +331,8 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
         print(f"{colors.cyan}Server and client pods running{colors.reset}")
 
         server_process = _start_server(config, resources, paths.server_log, colors)
+        benchmark_started = time.monotonic()
+        completed_runs = 0
         for iteration in iterations:
             client_status = 1
             for attempt in range(1, MAX_CLIENT_ATTEMPTS + 1):
@@ -325,7 +356,12 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
                     )
 
                 client_status_raw = _wait_for_client(
-                    client_process, iteration.config, colors
+                    client_process,
+                    iteration.config,
+                    colors,
+                    completed_runs,
+                    len(iterations),
+                    benchmark_started,
                 )
                 client_status = (
                     client_status_raw
@@ -355,6 +391,7 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
                 colors,
             )
             iteration.finalized = True
+            completed_runs += 1
 
             if client_status != 0:
                 print(

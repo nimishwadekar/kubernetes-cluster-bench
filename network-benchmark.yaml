@@ -44,7 +44,7 @@ spec:
           memory: "1Gi"
         limits:
           cpu: "8"
-          memory: "4Gi"
+          memory: "16Gi"
 ---
 apiVersion: v1
 kind: Pod
@@ -70,4 +70,4 @@ spec:
           memory: "1Gi"
         limits:
           cpu: "8"
-          memory: "4Gi"
+          memory: "16Gi"
