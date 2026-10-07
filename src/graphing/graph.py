@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -47,6 +48,15 @@ class GraphContext:
     title: str | None = None
 
 
+@dataclass(frozen=True)
+class _GraphPoint:
+    x_value: float
+    x_label: str
+    y_value: float
+    y_error: tuple[float, float] | None
+    group_key: tuple[str, float, str]
+
+
 def _x_value(record: BenchmarkRecord, parameter: XParameter) -> tuple[float | None, str]:
     metadata = record.metadata
     if parameter is XParameter.TRANSFER_SIZE:
@@ -76,15 +86,48 @@ def _y_value_and_error(
     raise ValueError(f"unsupported Y-axis metric: {metric}")
 
 
-def _run_id_lines(run_ids: Sequence[str]) -> str:
-    return "\n".join(f"  - {run_id}" for run_id in run_ids)
+def _aggregate_run_points(
+    points: Sequence[_GraphPoint], metric: YMetric
+) -> list[_GraphPoint]:
+    grouped: dict[tuple[str, float, str], list[_GraphPoint]] = {}
+    for point in points:
+        grouped.setdefault(point.group_key, []).append(point)
+
+    aggregated: list[_GraphPoint] = []
+    for group in grouped.values():
+        if len(group) == 1:
+            aggregated.append(group[0])
+            continue
+
+        y_values = [point.y_value for point in group]
+        mean = statistics.fmean(y_values)
+        if metric is YMetric.THROUGHPUT:
+            standard_deviation = statistics.stdev(y_values)
+            y_error = (standard_deviation, standard_deviation)
+        else:
+            y_error = None
+        first = group[0]
+        aggregated.append(
+            _GraphPoint(
+                x_value=first.x_value,
+                x_label=first.x_label,
+                y_value=mean,
+                y_error=y_error,
+                group_key=first.group_key,
+            )
+        )
+    return aggregated
+
+
+def _test_id_lines(test_ids: Sequence[str]) -> str:
+    return "\n".join(f"  - {test_id}" for test_id in test_ids)
 
 
 def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -> Path:
-    points: list[tuple[float, str, float, tuple[float, float] | None]] = []
-    x_missing_run_ids: list[str] = []
-    y_missing_run_ids: list[str] = []
-    non_finite_run_ids: list[str] = []
+    points: list[_GraphPoint] = []
+    x_missing_test_ids: list[str] = []
+    y_missing_test_ids: list[str] = []
+    non_finite_test_ids: list[str] = []
 
     for record in records:
         y_value, y_error = _y_value_and_error(record, context.y_metric)
@@ -95,48 +138,62 @@ def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -
                 math.isfinite(error) for error in y_error
             )
         if x_value is None:
-            x_missing_run_ids.append(record.metadata.run_id)
+            x_missing_test_ids.append(record.metadata.test_id)
         if y_value is None:
-            y_missing_run_ids.append(record.metadata.run_id)
+            y_missing_test_ids.append(record.metadata.test_id)
         if y_is_non_finite:
-            non_finite_run_ids.append(record.metadata.run_id)
+            non_finite_test_ids.append(record.metadata.test_id)
         if x_value is None or y_value is None or y_is_non_finite:
             continue
-        points.append((x_value, x_label, y_value, y_error))
+        group_id = (
+            record.metadata.test_id
+            if record.metadata.run_number is not None
+            else str(record.client.source_path)
+        )
+        points.append(
+            _GraphPoint(
+                x_value=x_value,
+                x_label=x_label,
+                y_value=y_value,
+                y_error=y_error,
+                group_key=(group_id, x_value, x_label),
+            )
+        )
 
-    if x_missing_run_ids:
+    if x_missing_test_ids:
         warning(
             f"X-axis {context.x_parameter.value} is N/A for "
-            f"{len(x_missing_run_ids)} run(s):\n{_run_id_lines(x_missing_run_ids)}"
+            f"{len(x_missing_test_ids)} test(s):\n{_test_id_lines(x_missing_test_ids)}"
         )
-    if y_missing_run_ids:
+    if y_missing_test_ids:
         warning(
             f"Y-axis {context.y_metric.value} is N/A for "
-            f"{len(y_missing_run_ids)} run(s):\n{_run_id_lines(y_missing_run_ids)}"
+            f"{len(y_missing_test_ids)} test(s):\n{_test_id_lines(y_missing_test_ids)}"
         )
-    if non_finite_run_ids:
+    if non_finite_test_ids:
         warning(
-            f"Y-axis {context.y_metric.value} is non-finite for run(s):\n"
-            f"{_run_id_lines(non_finite_run_ids)}"
+            f"Y-axis {context.y_metric.value} is non-finite for test(s):\n"
+            f"{_test_id_lines(non_finite_test_ids)}"
         )
 
-    if len(x_missing_run_ids) == len(records):
-        raise ValueError(f"all runs have N/A values for X-axis {context.x_parameter.value}")
-    if len(y_missing_run_ids) == len(records):
-        raise ValueError(f"all runs have N/A values for Y-axis {context.y_metric.value}")
+    if len(x_missing_test_ids) == len(records):
+        raise ValueError(f"all tests have N/A values for X-axis {context.x_parameter.value}")
+    if len(y_missing_test_ids) == len(records):
+        raise ValueError(f"all tests have N/A values for Y-axis {context.y_metric.value}")
     if not points:
         raise ValueError("no finite benchmark results contain the selected metrics")
 
-    points.sort(key=lambda point: point[0])
-    x_values = [point[0] for point in points]
-    labels = [point[1] for point in points]
-    y_values = [point[2] for point in points]
+    points = _aggregate_run_points(points, context.y_metric)
+    points.sort(key=lambda point: point.x_value)
+    x_values = [point.x_value for point in points]
+    labels = [point.x_label for point in points]
+    y_values = [point.y_value for point in points]
 
     figure = plt.figure(figsize=(10, 6))
     axes = figure.gca()
     if context.y_metric is YMetric.THROUGHPUT:
-        lower_errors = [point[3][0] for point in points if point[3] is not None]
-        upper_errors = [point[3][1] for point in points if point[3] is not None]
+        lower_errors = [point.y_error[0] for point in points if point.y_error is not None]
+        upper_errors = [point.y_error[1] for point in points if point.y_error is not None]
         axes.errorbar(
             x_values,
             y_values,
@@ -149,7 +206,7 @@ def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -
     else:
         axes.plot(x_values, y_values, marker="o", linewidth=1.5, markersize=6)
     highest_y = max(
-        point[2] + (point[3][1] if point[3] is not None else 0.0)
+        point.y_value + (point.y_error[1] if point.y_error is not None else 0.0)
         for point in points
     )
     y_padding = highest_y * 0.1 if highest_y > 0 else 1.0

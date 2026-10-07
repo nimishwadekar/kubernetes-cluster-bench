@@ -33,12 +33,12 @@ class ResourceNames:
     client_pod: str
 
     @classmethod
-    def from_run_id(cls, run_id: str) -> ResourceNames:
-        server_name = f"network-benchmark-server-{run_id}"
+    def from_test_id(cls, test_id: str) -> ResourceNames:
+        server_name = f"network-benchmark-server-{test_id}"
         return cls(
             server_service=server_name,
             server_pod=server_name,
-            client_pod=f"network-benchmark-client-{run_id}",
+            client_pod=f"network-benchmark-client-{test_id}",
         )
 
     @property
@@ -94,7 +94,7 @@ def render_manifest(config: BenchmarkConfig, rendered_manifest: Path) -> None:
 
     manifest = MANIFEST_TEMPLATE.read_text(encoding="utf-8")
     replacements = (
-        ("__RUN_ID__", config.run_id),
+        ("__TEST_ID__", config.test_id),
         ("__CLIENT_NODE__", config.client_node),
         ("__SERVER_NODE__", config.server_node),
         ("__IMAGE__", config.image),
@@ -151,7 +151,7 @@ def start_server_process(
     server_pod: str,
     server_log: Path,
 ) -> subprocess.Popen[bytes]:
-    """Start a persistent iperf3 server for repeated client benchmarks."""
+    """Start a persistent iperf3 server for multiple client tests."""
 
     with server_log.open("wb") as server_log_handle:
         return subprocess.Popen(
@@ -270,7 +270,7 @@ def cleanup_resources(
         else:
             print(
                 f"{colors.yellow}warning:{colors.reset} failed to clean up Kubernetes "
-                f"resources for run {config.run_id}",
+                f"resources for test {config.test_id}",
                 file=sys.stderr,
             )
     finally:

@@ -15,7 +15,7 @@ MAX_THROUGHPUT_INTERVAL_DURATION_MISMATCH_SECONDS = 0.1
 
 @dataclass(frozen=True)
 class Metadata:
-    run_id: str
+    test_id: str
     started_at: str
     finished_at: str | None
     kube_context: str
@@ -29,6 +29,8 @@ class Metadata:
     transfer_size: str | None
     transfer_size_bytes: int | None
     threads: int
+    run_number: int | None
+    run_count: int | None
     service_name: str
     server_pod: str
     client_pod: str
@@ -157,7 +159,7 @@ def load_metadata(path: Path) -> Metadata:
     root, trailing_content = _load_json_object(path)
     transfer_size = _optional_string(root.get("transfer_size"), "transfer_size")
     return Metadata(
-        run_id=_string(root.get("run_id"), "run_id"),
+        test_id=_string(root.get("test_id"), "test_id"),
         started_at=_string(root.get("started_at"), "started_at"),
         finished_at=_optional_string(root.get("finished_at"), "finished_at"),
         kube_context=_string(root.get("kube_context"), "kube_context"),
@@ -171,6 +173,10 @@ def load_metadata(path: Path) -> Metadata:
         transfer_size=transfer_size,
         transfer_size_bytes=_optional_size_bytes(transfer_size),
         threads=_int(root.get("threads", root.get("parallel_streams")), "threads"),
+        run_number=_optional_int(
+            root.get("run_id", root.get("run")), "run_id"
+        ),
+        run_count=_optional_int(root.get("runs"), "runs"),
         service_name=_string(root.get("service_name"), "service_name"),
         server_pod=_string(root.get("server_pod"), "server_pod"),
         client_pod=_string(root.get("client_pod"), "client_pod"),

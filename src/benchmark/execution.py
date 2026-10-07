@@ -37,7 +37,11 @@ class BenchmarkIteration:
     config: BenchmarkConfig
     paths: RunPaths
     metadata: Metadata
+    run_number: int
     finalized: bool = False
+
+
+MAX_CLIENT_ATTEMPTS = 3
 
 
 def _run_paths(config: BenchmarkConfig) -> RunPaths:
@@ -45,19 +49,14 @@ def _run_paths(config: BenchmarkConfig) -> RunPaths:
     log_dir.mkdir(parents=True, exist_ok=True)
     return RunPaths(
         log_dir=log_dir,
-        client_log=log_dir / f"{config.run_id}-client.json",
-        server_log=log_dir / f"{config.run_id}-server.json",
-        metadata_log=log_dir / f"{config.run_id}-metadata.json",
+        client_log=log_dir / f"{config.test_id}-client.json",
+        server_log=log_dir / f"{config.test_id}-server.json",
+        metadata_log=log_dir / f"{config.test_id}-metadata.json",
         rendered_manifest=create_rendered_manifest(),
     )
 
 
 def _iteration_config(config: BenchmarkConfig, thread_count: int) -> BenchmarkConfig:
-    run_id = (
-        config.run_id
-        if config.thread_spec.is_single
-        else f"{config.run_id}-t{thread_count}"
-    )
     return replace(
         config,
         threads=thread_count,
@@ -66,16 +65,19 @@ def _iteration_config(config: BenchmarkConfig, thread_count: int) -> BenchmarkCo
             if config.thread_spec.is_single
             else str(thread_count)
         ),
-        run_id=run_id,
+        test_id=config.test_id,
     )
 
 
-def _iteration_paths(config: BenchmarkConfig, shared_paths: RunPaths) -> RunPaths:
+def _iteration_paths(
+    config: BenchmarkConfig, shared_paths: RunPaths, run_number: int
+) -> RunPaths:
+    stem = f"{config.test_id}-t{config.threads}-run{run_number}"
     return RunPaths(
         log_dir=shared_paths.log_dir,
-        client_log=shared_paths.log_dir / f"{config.run_id}-client.json",
+        client_log=shared_paths.log_dir / f"{stem}-client.json",
         server_log=shared_paths.server_log,
-        metadata_log=shared_paths.log_dir / f"{config.run_id}-metadata.json",
+        metadata_log=shared_paths.log_dir / f"{stem}-metadata.json",
         rendered_manifest=shared_paths.rendered_manifest,
     )
 
@@ -112,7 +114,7 @@ def print_configuration(
     """Print the benchmark configuration block."""
 
     print(f"\n{colors.cyan}Benchmark configuration{colors.reset}")
-    print(f"  {'Run ID:':<20} {config.run_id}")
+    print(f"  {'Test ID:':<20} {config.test_id}")
     print(f"  {'Kubernetes context:':<20} {kube_context}")
     print(f"  {'Client node:':<20} {config.client_node}")
     print(f"  {'Server node:':<20} {config.server_node}")
@@ -124,7 +126,8 @@ def print_configuration(
     if config.duration_set:
         print(f"  {'Warmup:':<20} {config.warmup_text} seconds")
     print(f"  {'Transfer size:':<20} {transfer_size_display}")
-    print(f"  {'Threads:':<20} {config.threads_text}\n")
+    print(f"  {'Threads:':<20} {config.threads_text}")
+    print(f"  {'Runs per test:':<20} {config.run_text}\n")
 
 
 def _wait_for_client(
@@ -253,11 +256,12 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
     duration_display = f"{config.duration_text} seconds" if config.duration_set else "N/A"
     transfer_size_display = "N/A" if config.duration_set else config.transfer_size or ""
     paths = _run_paths(config)
-    resources = ResourceNames.from_run_id(config.run_id)
+    resources = ResourceNames.from_test_id(config.test_id)
     iterations: list[BenchmarkIteration] = []
     apply_started = False
     server_process: subprocess.Popen[bytes] | None = None
     client_process: subprocess.Popen[bytes] | None = None
+    failed_tests: list[str] = []
     run_status = 1
 
     try:
@@ -265,23 +269,26 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
         started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         for thread_count in config.thread_spec.values:
             iteration_config = _iteration_config(config, thread_count)
-            iteration_paths = _iteration_paths(iteration_config, paths)
-            iteration_metadata = initial_metadata(
-                iteration_config,
-                resources,
-                kube_context,
-                duration_display,
-                transfer_size_display,
-                started_at,
-            )
-            write_json_metadata(iteration_paths.metadata_log, iteration_metadata)
-            iterations.append(
-                BenchmarkIteration(
-                    config=iteration_config,
-                    paths=iteration_paths,
-                    metadata=iteration_metadata,
+            for run_number in range(1, config.runs + 1):
+                iteration_paths = _iteration_paths(iteration_config, paths, run_number)
+                iteration_metadata = initial_metadata(
+                    iteration_config,
+                    resources,
+                    kube_context,
+                    duration_display,
+                    transfer_size_display,
+                    started_at,
+                    run_number,
                 )
-            )
+                write_json_metadata(iteration_paths.metadata_log, iteration_metadata)
+                iterations.append(
+                    BenchmarkIteration(
+                        config=iteration_config,
+                        paths=iteration_paths,
+                        metadata=iteration_metadata,
+                        run_number=run_number,
+                    )
+                )
 
         print_configuration(config, kube_context, duration_display, transfer_size_display, colors)
         _check_for_collisions(resources, config, colors)
@@ -296,24 +303,49 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
 
         server_process = _start_server(config, resources, paths.server_log, colors)
         for iteration in iterations:
-            print(f"{colors.cyan}Client benchmark running{colors.reset}")
-            with iteration.paths.client_log.open("wb") as client_log_handle:
-                client_process = subprocess.Popen(
-                    _client_command(iteration.config, resources),
-                    stdout=client_log_handle,
-                    stderr=subprocess.STDOUT,
+            client_status = 1
+            for attempt in range(1, MAX_CLIENT_ATTEMPTS + 1):
+                iteration.paths.client_log.write_bytes(b"")
+                attempt_text = (
+                    ""
+                    if attempt == 1
+                    else f" (attempt {attempt}/{MAX_CLIENT_ATTEMPTS})"
                 )
+                print(
+                    f"{colors.cyan}Client benchmark running with "
+                    f"{iteration.config.threads} thread(s) "
+                    f"(run {iteration.run_number}/{iteration.config.runs})"
+                    f"{attempt_text}{colors.reset}"
+                )
+                with iteration.paths.client_log.open("wb") as client_log_handle:
+                    client_process = subprocess.Popen(
+                        _client_command(iteration.config, resources),
+                        stdout=client_log_handle,
+                        stderr=subprocess.STDOUT,
+                    )
 
-            client_status_raw = _wait_for_client(
-                client_process, iteration.config, colors
-            )
-            client_status = (
-                client_status_raw
-                if client_status_raw >= 0
-                else 128 + (-client_status_raw)
-            )
-            client_process = None
-            run_status = client_status
+                client_status_raw = _wait_for_client(
+                    client_process, iteration.config, colors
+                )
+                client_status = (
+                    client_status_raw
+                    if client_status_raw >= 0
+                    else 128 + (-client_status_raw)
+                )
+                client_process = None
+                if client_status == 0:
+                    break
+                if attempt < MAX_CLIENT_ATTEMPTS:
+                    print(
+                        f"{colors.yellow}benchmark attempt failed with status "
+                        f"{client_status}; retrying{colors.reset}",
+                        file=sys.stderr,
+                    )
+
+            if client_status != 0:
+                failed_tests.append(
+                    f"{iteration.paths.metadata_log.stem} (client_status={client_status})"
+                )
             _write_results(
                 iteration.metadata,
                 iteration.paths.metadata_log,
@@ -326,13 +358,22 @@ def run_benchmark(config: BenchmarkConfig, kube_context: str, colors: Colors) ->
 
             if client_status != 0:
                 print(
-                    f"{colors.red}benchmark failed:{colors.reset} client output was saved to "
-                    f"{iteration.paths.client_log}",
+                    f"{colors.red}benchmark test failed after "
+                    f"{MAX_CLIENT_ATTEMPTS} attempts:{colors.reset} client output was "
+                    f"saved to {iteration.paths.client_log}; continuing",
                     file=sys.stderr,
                 )
-                return 1
+                continue
             print(f"{colors.green}Client benchmark completed successfully{colors.reset}\n")
 
+        if failed_tests:
+            print(
+                f"{colors.red}benchmark completed with failed test(s):{colors.reset} "
+                + ", ".join(failed_tests),
+                file=sys.stderr,
+            )
+            run_status = 1
+            return 1
         run_status = 0
         return 0
     except BenchmarkExit as error:

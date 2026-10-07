@@ -21,7 +21,7 @@ DEFAULT_DURATION = "10"
 DEFAULT_WARMUP = "5"
 DEFAULT_THREADS = "1"
 DEFAULT_TIMEOUT = "120"
-RUN_ID_LIMIT = 38
+TEST_ID_LIMIT = 38
 PROGRESS_WIDTH = 30
 
 @dataclass(frozen=True)
@@ -38,9 +38,10 @@ class ParsedConfig:
     warmup_set: bool
     transfer_size: str | None
     threads_text: str
+    run_text: str
     timeout_text: str
     keep_resources: bool
-    run_id: str
+    test_id: str
     log_dir: str
 
 
@@ -63,7 +64,7 @@ class ThreadSpec:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    """Validated settings used by one benchmark run."""
+    """Validated settings used by one benchmark test."""
 
     client_node: str
     server_node: str
@@ -77,11 +78,13 @@ class BenchmarkConfig:
     transfer_size: str | None
     threads: int
     threads_text: str
+    runs: int
+    run_text: str
     thread_spec: ThreadSpec
     timeout: int
     timeout_text: str
     keep_resources: bool
-    run_id: str
+    test_id: str
     log_dir: str
 
 
@@ -168,10 +171,14 @@ def make_parser() -> argparse.ArgumentParser:
         help="Thread counts (default: 1). Examples: 4; 1:4; 1:5:2",
     )
     options.add_argument(
+        "-r", "--run", default="1", metavar="COUNT",
+        help="Run each benchmark test this many times (default: 1)",
+    )
+    options.add_argument(
         "--timeout", default=DEFAULT_TIMEOUT, metavar="SECONDS",
         help="Kubernetes wait timeout (default: 120)",
     )
-    parser.set_defaults(run_id=f"run-{utc_timestamp('%Y%m%d-%H%M%S')}-{os.getpid()}")
+    parser.set_defaults(test_id=f"test-{utc_timestamp('%Y%m%d-%H%M%S')}-{os.getpid()}")
     options.add_argument(
         "--keep-resources", action="store_true",
         help="Keep benchmark pods and service after completion",
@@ -196,9 +203,10 @@ def parse_arguments(arguments: Sequence[str]) -> ParsedConfig:
         warmup_set=parsed.warmup is not None,
         transfer_size=parsed.transfer_size,
         threads_text=parsed.threads,
+        run_text=parsed.run,
         timeout_text=parsed.timeout,
         keep_resources=parsed.keep_resources,
-        run_id=parsed.run_id,
+        test_id=parsed.test_id,
         log_dir=parsed.log_dir,
     )
 
@@ -279,6 +287,8 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
         argument_error("--duration must be a positive integer", colors)
     if not is_nonnegative_integer(config.warmup_text):
         argument_error("--warmup must be a non-negative integer", colors)
+    if not is_positive_integer(config.run_text):
+        argument_error("--run must be a positive integer", colors)
     thread_spec = parse_thread_spec(config.threads_text)
     if thread_spec is None:
         argument_error(
@@ -311,8 +321,8 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
 
     if not _valid_dns_label(namespace, 63):
         argument_error("--namespace must be a valid Kubernetes namespace", colors)
-    if not _valid_dns_label(config.run_id, RUN_ID_LIMIT):
-        argument_error("--run-id must be a lowercase DNS label of 38 characters or fewer", colors)
+    if not _valid_dns_label(config.test_id, TEST_ID_LIMIT):
+        argument_error("--test-id must be a lowercase DNS label of 38 characters or fewer", colors)
     if re.fullmatch(r"[A-Za-z0-9._/@:-]+", config.image) is None:
         argument_error("--image contains unsupported characters", colors)
 
@@ -329,10 +339,12 @@ def validate_config(config: ParsedConfig, namespace: str, colors: Colors) -> Ben
         transfer_size=transfer_size,
         threads=thread_spec.start,
         threads_text=config.threads_text,
+        runs=int(config.run_text),
+        run_text=config.run_text,
         thread_spec=thread_spec,
         timeout=int(config.timeout_text),
         timeout_text=config.timeout_text,
         keep_resources=config.keep_resources,
-        run_id=config.run_id,
+        test_id=config.test_id,
         log_dir=config.log_dir,
     )

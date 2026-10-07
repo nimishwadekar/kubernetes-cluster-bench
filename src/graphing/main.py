@@ -120,19 +120,19 @@ def validate_records(records: Sequence[BenchmarkRecord]) -> None:
                 non_finite_labels.get(field, field)
                 for field in record.client.non_finite_fields
             )
-            warning(f"non-finite value(s) in {fields} for run {record.metadata.run_id}")
+            warning(f"non-finite value(s) in {fields} for test {record.metadata.test_id}")
 
         if record.metadata.client_status != 0:
             status = record.metadata.client_status
             status_text = "missing" if status is None else str(status)
-            unsuccessful.append(f"{record.metadata.run_id} (client_status={status_text})")
+            unsuccessful.append(f"{record.metadata.test_id} (client_status={status_text})")
         elif record.client.error is not None:
-            unsuccessful.append(f"{record.metadata.run_id} ({record.client.error})")
+            unsuccessful.append(f"{record.metadata.test_id} ({record.client.error})")
         elif not record.client.successful:
-            unsuccessful.append(f"{record.metadata.run_id} (incomplete client result)")
+            unsuccessful.append(f"{record.metadata.test_id} (incomplete client result)")
 
     if unsuccessful:
-        raise ValueError("unsuccessful benchmark run(s): " + ", ".join(unsuccessful))
+        raise ValueError("unsuccessful benchmark test(s): " + ", ".join(unsuccessful))
 
 
 def main() -> int:

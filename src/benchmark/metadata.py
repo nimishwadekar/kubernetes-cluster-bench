@@ -33,11 +33,12 @@ def initial_metadata(
     duration_display: str,
     transfer_size_display: str,
     started_at: str,
+    run_number: int,
 ) -> Metadata:
     """Build the metadata object written before kubectl apply."""
 
     return {
-        "run_id": config.run_id,
+        "test_id": config.test_id,
         "started_at": started_at,
         "kube_context": kube_context,
         "client_node": config.client_node,
@@ -50,6 +51,8 @@ def initial_metadata(
         "warmup": config.warmup if config.duration_set else 0,
         "transfer_size": transfer_size_display,
         "threads": config.threads,
+        "run_id": run_number,
+        "runs": config.runs,
         "service_name": resources.server_service,
         "server_pod": resources.server_pod,
         "client_pod": resources.client_pod,

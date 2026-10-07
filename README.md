@@ -27,17 +27,20 @@ Useful options include:
 - TCP throughput testing
 - `--duration SECONDS` (default: `10` measured seconds)
 - `--warmup SECONDS` (default: `5`; duration tests only), omitted from the measured results and added to the total iperf3 runtime
-- `--threads SPEC` (default: `1`), using `start[:end[:step]]`; for example, `4`, `1:4`, or `1:5:2`. Ranges run sequential benchmarks using the same pod pair and append `-tTHREADS` to result and metadata filenames.
+- `--threads SPEC` (default: `1`), using `start[:end[:step]]`; for example, `4`, `1:4`, or `1:5:2`.
+- `-r, --run COUNT` (default: `1`), runs each thread-count test multiple times and records runs as `-run1`, `-run2`, and so on in filenames while keeping the base test ID unchanged.
 - `-d, --dir DIR` (default: `<PWD>/logs`)
 - `--namespace NAMESPACE`
 - `--image IMAGE`
 - `--keep-resources`
 
+Each client test is attempted up to three times. Failed attempts clear the client JSON before retrying; if all attempts fail, the runner continues with the remaining tests and exits nonzero after reporting all failed tests.
+
 Results are written under the selected log directory:
 
-- `<run-id>-client.json`: `iperf3` JSON result, including structured server output for the completed test
-- `<run-id>-server.json`: JSON server output, with one result per completed client test
-- `<run-id>-metadata.json`: benchmark parameters, resource names, and timestamps
+- `<test-id>-tTHREADS-runRUN-client.json`: `iperf3` JSON result, including structured server output for the completed test
+- `<test-id>-server.json`: JSON server output, with one result per completed client test
+- `<test-id>-tTHREADS-runRUN-metadata.json`: benchmark parameters, resource names, timestamps, and numeric `run_id`
 
 The manifest uses normal Kubernetes pod networking and a per-run Service for the server. The runner does not use `hostNetwork`.
 
@@ -65,4 +68,4 @@ You can also select metadata files explicitly:
   --output graphs/throughput.png
 ```
 
-Available X-axis parameters are `transfer_size` and `threads`. Available Y-axis metrics are `throughput`, `retransmits`, and `client_cpu_util`. Throughput points use the mean of valid server per-interval sum bitrates at least 0.5 seconds long, with standard-deviation error bars. Intervals with inconsistent start/end timing are excluded.
+Available X-axis parameters are `transfer_size` and `threads`. Available Y-axis metrics are `throughput`, `retransmits`, and `client_cpu_util`. Throughput points use the mean of valid server per-interval sum bitrates at least 0.5 seconds long, with standard-deviation error bars. Intervals with inconsistent start/end timing are excluded. Repeated results from the same test are aggregated by run mean, with between-run standard deviation as the throughput error bar.
