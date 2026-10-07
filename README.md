@@ -65,7 +65,10 @@ You can also select metadata files explicitly:
   --dir logs \
   --x threads \
   --y throughput \
+  --max-throughput 200 \
   --output graphs/throughput.png
 ```
+
+`--max-throughput` adds a horizontal theoretical-maximum line in Gbit/s and is valid only for throughput graphs. `-p, --percentile` plots the selected throughput percentile, adds `-pX` to the default graph filename, and appends ` - Xth percentile` to the title. Percentiles are calculated from each run's valid server interval throughput values before repeated runs are aggregated. Graph points use hollow markers.
 
 Available X-axis parameters are `transfer_size` and `threads`. Available Y-axis metrics are `throughput`, `retransmits`, and `client_cpu_util`. Throughput points use the mean of valid server per-interval sum bitrates at least 0.5 seconds long, with standard-deviation error bars. Intervals with inconsistent start/end timing are excluded. Repeated results from the same test are aggregated by run mean, with between-run standard deviation as the throughput error bar.

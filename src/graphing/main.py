@@ -7,13 +7,13 @@ from typing import NoReturn, Sequence
 
 from ..common.console import colored_options, format_error, warning
 from .data import BenchmarkRecord, load_benchmark_record
-from .graph import GraphContext, XParameter, YMetric, plot_benchmarks
+from .graph import GraphContext, XParameter, YMetric, format_percentile, plot_benchmarks
 
 
 def usage() -> str:
     return (
         "%(prog)s --x PARAM [--y METRIC] [--dir DIR]\n"
-        "       [--output FILE] [--title TITLE]"
+        "       [--output FILE] [--title TITLE] [--percentile PERCENT]"
     )
 
 
@@ -28,6 +28,26 @@ class UsageArgumentParser(argparse.ArgumentParser):
         print(file=sys.stderr)
         self.print_help(sys.stderr)
         self.exit(2)
+
+
+def positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def percentile(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number") from error
+    if not 0 <= parsed <= 100:
+        raise argparse.ArgumentTypeError("must be between 0 and 100")
+    return parsed
 
 
 def build_parser() -> UsageArgumentParser:
@@ -86,6 +106,21 @@ def build_parser() -> UsageArgumentParser:
         metavar="TEXT",
         help="Optional graph title."
     )
+    parser.add_argument(
+        "--max-throughput",
+        type=positive_float,
+        default=None,
+        metavar="GBIT/S",
+        help="Theoretical maximum throughput line in Gbit/s (throughput graphs only).",
+    )
+    parser.add_argument(
+        "-p",
+        "--percentile",
+        type=percentile,
+        default=None,
+        metavar="PERCENT",
+        help="Plot a throughput percentile from 0 to 100 (no default).",
+    )
 
     return parser
 
@@ -142,14 +177,25 @@ def main() -> int:
         records = load_records(metadata_paths(args))
         validate_records(records)
         directory: Path = args.directory
-        output_path: Path = args.output or directory / "graphs" / (
-            f"{args.y_metric.value}-{args.x_parameter.value}.png"
-        )
+        if args.output is not None:
+            output_path = args.output
+        else:
+            percentile_suffix = (
+                f"-p{format_percentile(args.percentile)}"
+                if args.percentile is not None
+                else ""
+            )
+            output_path = directory / "graphs" / (
+                f"{args.y_metric.value}-{args.x_parameter.value}"
+                f"{percentile_suffix}.png"
+            )
         context = GraphContext(
             x_parameter=args.x_parameter,
             y_metric=args.y_metric,
             output_path=output_path,
             title=args.title,
+            max_throughput_gbps=args.max_throughput,
+            percentile=args.percentile,
         )
         output_path = plot_benchmarks(records, context)
     except (OSError, ValueError) as error:

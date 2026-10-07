@@ -45,6 +45,7 @@ class ClientBenchmark:
     sender_throughput_bps: float | None
     server_throughput_mean_bps: float | None
     server_throughput_stddev_bps: float | None
+    server_throughput_values_bps: tuple[float, ...]
     received_bytes: int | None
     sent_bytes: int | None
     test_duration_seconds: float | None
@@ -206,10 +207,10 @@ def _mean_rtt_us(end: JsonObject) -> float | None:
 
 def _server_throughput_stats(
     root: JsonObject,
-) -> tuple[float | None, float | None]:
+) -> tuple[float | None, float | None, tuple[float, ...]]:
     server_output_value = root.get("server_output_json")
     if server_output_value is None:
-        return None, None
+        return None, None, ()
     server_output = _object(server_output_value, "server_output_json")
     intervals_value = server_output.get("intervals")
     if not isinstance(intervals_value, list):
@@ -253,10 +254,10 @@ def _server_throughput_stats(
             values.append(bits_per_second)
 
     if not values:
-        return None, None
+        return None, None, ()
     mean = statistics.fmean(values)
     standard_deviation = statistics.stdev(values) if len(values) > 1 else 0.0
-    return mean, standard_deviation
+    return mean, standard_deviation, tuple(values)
 
 
 def load_client_benchmark(path: Path) -> ClientBenchmark:
@@ -267,9 +268,11 @@ def load_client_benchmark(path: Path) -> ClientBenchmark:
     sum_sent = _object(end.get("sum_sent", {}), "end.sum_sent")
     sum_received = _object(end.get("sum_received", {}), "end.sum_received")
     cpu = _object(end.get("cpu_utilization_percent", {}), "end.cpu_utilization_percent")
-    server_throughput_mean_bps, server_throughput_stddev_bps = _server_throughput_stats(
-        root
-    )
+    (
+        server_throughput_mean_bps,
+        server_throughput_stddev_bps,
+        server_throughput_values_bps,
+    ) = _server_throughput_stats(root)
 
     client = ClientBenchmark(
         receiver_throughput_bps=_optional_float(
@@ -280,6 +283,7 @@ def load_client_benchmark(path: Path) -> ClientBenchmark:
         ),
         server_throughput_mean_bps=server_throughput_mean_bps,
         server_throughput_stddev_bps=server_throughput_stddev_bps,
+        server_throughput_values_bps=server_throughput_values_bps,
         received_bytes=_optional_int(sum_received.get("bytes"), "end.sum_received.bytes"),
         sent_bytes=_optional_int(sum_sent.get("bytes"), "end.sum_sent.bytes"),
         test_duration_seconds=_optional_float(

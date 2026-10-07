@@ -46,6 +46,8 @@ class GraphContext:
     y_metric: YMetric
     output_path: Path
     title: str | None = None
+    max_throughput_gbps: float | None = None
+    percentile: float | None = None
 
 
 @dataclass(frozen=True)
@@ -67,12 +69,34 @@ def _x_value(record: BenchmarkRecord, parameter: XParameter) -> tuple[float | No
     raise ValueError(f"unsupported X-axis parameter: {parameter}")
 
 
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        raise ValueError("cannot calculate a percentile without values")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percentile / 100
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def format_percentile(percentile: float) -> str:
+    return f"{percentile:g}"
+
+
 def _y_value_and_error(
-    record: BenchmarkRecord, metric: YMetric
+    record: BenchmarkRecord,
+    metric: YMetric,
+    percentile: float | None = None,
 ) -> tuple[float | None, tuple[float, float] | None]:
     client = record.client
     if metric is YMetric.THROUGHPUT:
-        mean_bps = client.server_throughput_mean_bps
+        if percentile is None:
+            mean_bps = client.server_throughput_mean_bps
+        elif client.server_throughput_values_bps:
+            mean_bps = _percentile(client.server_throughput_values_bps, percentile)
+        else:
+            mean_bps = None
         standard_deviation_bps = client.server_throughput_stddev_bps
         if mean_bps is None or standard_deviation_bps is None:
             return None, None
@@ -124,13 +148,20 @@ def _test_id_lines(test_ids: Sequence[str]) -> str:
 
 
 def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -> Path:
+    if context.max_throughput_gbps is not None and context.y_metric is not YMetric.THROUGHPUT:
+        raise ValueError("--max-throughput can only be used with throughput graphs")
+    if context.percentile is not None and context.y_metric is not YMetric.THROUGHPUT:
+        raise ValueError("--percentile can only be used with throughput graphs")
+
     points: list[_GraphPoint] = []
     x_missing_test_ids: list[str] = []
     y_missing_test_ids: list[str] = []
     non_finite_test_ids: list[str] = []
 
     for record in records:
-        y_value, y_error = _y_value_and_error(record, context.y_metric)
+        y_value, y_error = _y_value_and_error(
+            record, context.y_metric, context.percentile
+        )
         x_value, x_label = _x_value(record, context.x_parameter)
         y_is_non_finite = y_value is not None and not math.isfinite(y_value)
         if y_error is not None:
@@ -201,19 +232,49 @@ def plot_benchmarks(records: Sequence[BenchmarkRecord], context: GraphContext) -
             fmt="-o",
             linewidth=1.5,
             markersize=6,
+            markerfacecolor="none",
             capsize=4,
         )
     else:
-        axes.plot(x_values, y_values, marker="o", linewidth=1.5, markersize=6)
+        axes.plot(
+            x_values,
+            y_values,
+            marker="o",
+            linewidth=1.5,
+            markersize=6,
+            markerfacecolor="none",
+        )
     highest_y = max(
-        point.y_value + (point.y_error[1] if point.y_error is not None else 0.0)
-        for point in points
+        max(
+            point.y_value + (point.y_error[1] if point.y_error is not None else 0.0)
+            for point in points
+        ),
+        context.max_throughput_gbps or 0.0,
     )
     y_padding = highest_y * 0.1 if highest_y > 0 else 1.0
     axes.set_ylim(bottom=0, top=highest_y + y_padding)
     axes.set_xlabel(context.x_parameter.label())
     axes.set_ylabel(context.y_metric.label())
-    axes.set_title(context.title or f"{context.y_metric.label()} by {context.x_parameter.label()}")
+    title = context.title or f"{context.y_metric.label()} by {context.x_parameter.label()}"
+    if context.percentile is not None:
+        title += f" - {format_percentile(context.percentile)}th percentile"
+    axes.set_title(title)
+    if context.max_throughput_gbps is not None:
+        axes.axhline(
+            context.max_throughput_gbps,
+            color="tab:red",
+            linestyle="--",
+            linewidth=1.5,
+        )
+        axes.text(
+            0.01,
+            context.max_throughput_gbps,
+            f"{context.max_throughput_gbps:g} Gbit/s max",
+            transform=axes.get_yaxis_transform(),
+            color="tab:red",
+            ha="left",
+            va="bottom",
+        )
     axes.grid(True, alpha=0.3)
 
     if context.x_parameter is XParameter.TRANSFER_SIZE:
