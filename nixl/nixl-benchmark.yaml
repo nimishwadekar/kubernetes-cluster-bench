@@ -1,0 +1,78 @@
+# NIXLBench Kubernetes resources for a two-node GPU KV-cache transfer test.
+# Replace __TEST_ID__, __IMAGE__, __CLIENT_NODE__, and __SERVER_NODE__ before applying.
+# Both benchmark pods run nixlbench with the ASIO runtime; no etcd resources are required.
+# UCX_TLS restricts the data path to TCP plus CUDA host staging; RDMA is excluded.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nixlbench-server-__TEST_ID__
+  labels:
+    app: nixlbench
+    role: server
+    test: __TEST_ID__
+spec:
+  nodeName: __SERVER_NODE__
+  hostNetwork: false
+  dnsPolicy: ClusterFirst
+  terminationGracePeriodSeconds: 1
+  restartPolicy: Never
+  containers:
+    - name: nixlbench-server
+      image: __IMAGE__
+      imagePullPolicy: Always
+      command: ["sleep"]
+      args: ["infinity"]
+      env:
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility"
+        - name: UCX_TLS
+          value: "tcp,self,cuda_copy"
+        - name: UCX_WARN_UNUSED_ENV_VARS
+          value: "n"
+      resources:
+        requests:
+          cpu: "1"
+          memory: "8Gi"
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+          nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nixlbench-client-__TEST_ID__
+  labels:
+    app: nixlbench
+    role: client
+    test: __TEST_ID__
+spec:
+  nodeName: __CLIENT_NODE__
+  hostNetwork: false
+  dnsPolicy: ClusterFirst
+  terminationGracePeriodSeconds: 1
+  restartPolicy: Never
+  containers:
+    - name: nixlbench-client
+      image: __IMAGE__
+      imagePullPolicy: Always
+      command: ["sleep"]
+      args: ["infinity"]
+      env:
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility"
+        - name: UCX_TLS
+          value: "tcp,self,cuda_copy"
+        - name: UCX_WARN_UNUSED_ENV_VARS
+          value: "n"
+      resources:
+        requests:
+          cpu: "1"
+          memory: "8Gi"
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "8"
+          memory: "32Gi"
+          nvidia.com/gpu: "1"

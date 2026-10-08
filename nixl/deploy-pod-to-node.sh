@@ -6,6 +6,8 @@ amd_gpu_count=""
 node_name=""
 namespace=""
 
+manifest_file="nixl-pod.yaml"
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --request-nvidia-gpus)
@@ -53,8 +55,7 @@ if [ -z "$node_name" ]; then
     exit 1
 fi
 
-#pod_name="networking-debug-pod-$node_name"
-pod_name="test-pod-$node_name"
+pod_name="nixl-test-pod-$node_name"
 
 # Check if pod already exists
 if kubectl get pod "$pod_name" -n "$namespace" &>/dev/null; then
@@ -75,7 +76,13 @@ if kubectl get pod "$pod_name" -n "$namespace" &>/dev/null; then
 fi
 
 # Apply manifest with dynamic podName, nodeName, namespace, and GPU count substitution
+if [ ! -f "$manifest_file" ]; then
+    echo "Error: Manifest file '$manifest_file' does not exist."
+    exit 1
+fi
+
 echo "Deploying pod '$pod_name' to node: $node_name in namespace: $namespace"
+echo "  Manifest: $manifest_file"
 
 # Build GPU info message
 gpu_info=""
@@ -108,7 +115,7 @@ else
 fi
 
 
-if ! sed -e "$sed_cmd" networking-debug-pod.yaml | kubectl apply -f -; then
+if ! sed -e "$sed_cmd" "$manifest_file" | kubectl apply -f -; then
     echo "✗ Pod deployment failed."
     exit 1
 fi

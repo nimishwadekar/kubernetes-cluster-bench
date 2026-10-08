@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: REPLACE_POD_NAME  # Will be replaced by deploy_pod_to_node.sh
+  namespace: REPLACE_NAMESPACE  # Will be replaced by deploy_pod_to_node.sh
+spec:
+  hostNetwork: false      # Use the standard pod network
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  nodeSelector:
+    kubernetes.io/hostname: "REPLACE_NODE_NAME"  # Will be replaced by deploy_pod_to_node.sh
+  containers:
+  - name: nixl-benchmark-container
+    image: quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0
+    imagePullPolicy: Always  # Always pull the latest image, even if tag is the same
+    resources:
+      limits:
+        # GPU resources - will be replaced by deploy_pod_to_node.sh
+        # Use --request-nvidia-gpus or --request-amd-gpus to request GPUs
+        nvidia.com/gpu: REPLACE_NVIDIA_GPU_COUNT    # NVIDIA GPUs (requires nvidia device plugin)
+        amd.com/gpu: REPLACE_AMD_GPU_COUNT          # AMD GPUs (requires AMD device plugin, provides /dev/kfd and /dev/dri)
+    securityContext:
+      privileged: false
+    
+    command: ["/bin/bash", "-c"]
+    args: ["sleep infinity"]  # Keep the pod running for debugging; replace with actual command as needed
