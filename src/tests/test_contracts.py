@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from new_src.backends.plugin import BackendCapabilityError, BackendPlugin
-from new_src.benchmark.contracts import (
+from src.backends.plugin import BackendCapabilityError, BackendPlugin
+from src.benchmark.contracts import (
     BackendResources,
     BenchmarkConfig,
     BenchmarkRunner,
 )
-from new_src.graphing.contracts import (
+from src.graphing.contracts import (
     AnalysisRequest,
     GraphPoint,
     Observation,

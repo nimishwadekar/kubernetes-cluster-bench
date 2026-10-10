@@ -7,21 +7,21 @@ import subprocess
 import tempfile
 import unittest
 
-from new_src.benchmark.artifacts import (
+from src.benchmark.artifacts import (
     create_run_directory,
     create_test_directory,
     write_json,
 )
-from new_src.benchmark.kubernetes import KubectlClient, KubectlError
-from new_src.graphing.contracts import (
+from src.benchmark.kubernetes import KubectlClient, KubectlError
+from src.graphing.contracts import (
     AnalysisRequest,
     GraphPoint,
     MissingDimensionError,
     Observation,
 )
-from new_src.graphing.renderer import GraphRenderConfig, render_graph
-from new_src.graphing.selection import numeric_dimension, select_observations
-from new_src.graphing.statistics import (
+from src.graphing.renderer import GraphRenderConfig, render_graph
+from src.graphing.selection import numeric_dimension, select_observations
+from src.graphing.statistics import (
     mean,
     mean_and_standard_deviation,
     percentile,
@@ -41,7 +41,7 @@ class SharedFactoringTests(unittest.TestCase):
 
             self.assertEqual(
                 run_directory,
-                Path(directory) / "iperf3" / "test-1" / "raw" / "t2-run3",
+                Path(directory) / "iperf3" / "test-1" / "raw" / "t2",
             )
             self.assertEqual(json.loads(artifact.read_text())["threads"], 2)
             self.assertEqual(test_directory / "raw", raw_directory)
@@ -127,7 +127,7 @@ class SharedFactoringTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
 
-    @patch("new_src.benchmark.kubernetes.subprocess.run")
+    @patch("src.benchmark.kubernetes.subprocess.run")
     def test_kubectl_wrapper_builds_shared_commands(self, run_mock) -> None:
         run_mock.return_value = subprocess.CompletedProcess(
             args=["kubectl"], returncode=0, stdout="pod/x\n", stderr=""
@@ -138,7 +138,7 @@ class SharedFactoringTests(unittest.TestCase):
         client.wait_for("bench", "pod/x", "jsonpath={.status.phase}=Running", 30)
         self.assertGreaterEqual(run_mock.call_count, 3)
 
-    @patch("new_src.benchmark.kubernetes.subprocess.run")
+    @patch("src.benchmark.kubernetes.subprocess.run")
     def test_kubectl_errors_are_actionable(self, run_mock) -> None:
         run_mock.return_value = subprocess.CompletedProcess(
             args=["kubectl", "get"], returncode=1, stdout="", stderr="forbidden"

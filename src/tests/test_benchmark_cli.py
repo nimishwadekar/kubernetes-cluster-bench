@@ -4,11 +4,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from new_src.backends.plugin import BackendPlugin
-from new_src.backends.registry import BackendRegistry
-from new_src.benchmark.cli import parse_config
-from new_src.benchmark.contracts import BackendResources, BenchmarkConfig, RunContext
-from new_src.benchmark.cli import main
+from src.backends.plugin import BackendPlugin
+from src.backends.registry import BackendRegistry
+from src.benchmark.cli import parse_config
+from src.benchmark.contracts import BackendResources, BenchmarkConfig, RunContext
+from src.benchmark.cli import main
 
 
 class CliRunner:

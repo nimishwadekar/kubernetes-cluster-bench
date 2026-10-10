@@ -51,7 +51,7 @@ def print_results(
     print(f"\n{colors.cyan}Results{colors.reset}")
     print(
         f"  {colors.cyan}Client result:{colors.reset} "
-        f"{colors.green}{display_path(_client_path(config, run_directory))}{colors.reset}"
+        f"{colors.green}{display_path(_client_path(config, run_directory, outcome.run_number))}{colors.reset}"
     )
     print(
         f"  {colors.cyan}Server log:{colors.reset}    "
@@ -63,7 +63,6 @@ def print_results(
     )
 
 
-def _client_path(config: BenchmarkConfig, run_directory: Path) -> Path:
-    thread = run_directory.name.split("-", 1)[0].removeprefix("t")
-    run = run_directory.name.rsplit("-run", 1)[-1]
-    return run_directory / f"{config.test_id}-t{thread}-run{run}-client.json"
+def _client_path(config: BenchmarkConfig, run_directory: Path, run_number: int) -> Path:
+    thread = run_directory.name.removeprefix("t")
+    return run_directory / f"{config.test_id}-t{thread}-run{run_number}-client.json"

@@ -5,13 +5,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from new_src.backends.iperf3.analyzer import Iperf3Analyzer
-from new_src.backends.iperf3.parser import Iperf3Parser
-from new_src.backends.iperf3.plugin import create_plugin
-from new_src.backends.iperf3.runner import Iperf3Runner
-from new_src.backends.registry import default_registry
-from new_src.benchmark.contracts import BackendResources, BenchmarkConfig
-from new_src.graphing.contracts import AnalysisRequest
+from src.backends.iperf3.analyzer import Iperf3Analyzer
+from src.backends.iperf3.parser import Iperf3Parser
+from src.backends.iperf3.plugin import create_plugin
+from src.backends.iperf3.runner import Iperf3Runner
+from src.backends.registry import default_registry
+from src.benchmark.contracts import BackendResources, BenchmarkConfig
+from src.graphing.contracts import AnalysisRequest
 
 
 class Iperf3PluginTests(unittest.TestCase):
@@ -29,8 +29,8 @@ class Iperf3PluginTests(unittest.TestCase):
         )
 
     def write_run(self, directory: Path, *, run_number: int, values: list[dict[str, object]]) -> Path:
-        run_directory = directory / f"t1-run{run_number}"
-        run_directory.mkdir(parents=True)
+        run_directory = directory / "t1"
+        run_directory.mkdir(parents=True, exist_ok=True)
         command = {
             "backend": "iperf3",
             "benchmark": "network-throughput",
@@ -42,7 +42,7 @@ class Iperf3PluginTests(unittest.TestCase):
             "namespace": "bench",
             "image": "example/iperf3:latest",
             "parameters": {"threads": 1, "duration_seconds": 5, "warmup_seconds": 2},
-            "client_file": "client.json",
+            "client_file": f"test-1-t1-run{run_number}-client.json",
             "server_file": "../test-1-server.json",
             "client_status": 0,
             "started_at": "2026-10-09T00:00:00Z",
@@ -55,7 +55,9 @@ class Iperf3PluginTests(unittest.TestCase):
             "start": {"test_start": {"num_streams": 1}},
             "server_output_json": {"intervals": [{"sum": value} for value in values]},
         }
-        (run_directory / "client.json").write_text(json.dumps(client), encoding="utf-8")
+        (run_directory / f"test-1-t1-run{run_number}-client.json").write_text(
+            json.dumps(client), encoding="utf-8"
+        )
         (directory / "test-1-server.json").write_text("server\n", encoding="utf-8")
         return run_directory
 
@@ -103,7 +105,7 @@ class Iperf3PluginTests(unittest.TestCase):
                     {"start": 4, "end": 5, "seconds": 1, "bits_per_second": 3e9, "omitted": False},
                 ],
             )
-            observations = parser.parse(raw / "t1-run1")
+            observations = parser.parse(raw / "t1")
         self.assertEqual(len(observations), 4)
         self.assertEqual(
             [observation.metadata["valid"] for observation in observations],
@@ -149,7 +151,7 @@ class Iperf3PluginTests(unittest.TestCase):
                     {"start": 1, "end": 2, "seconds": 1, "bits_per_second": 3e9, "omitted": False},
                 ],
             )
-            observations = analyzer.parse(raw / "t1-run1")
+            observations = analyzer.parse(raw / "t1")
             points = analyzer.aggregate(
                 observations,
                 AnalysisRequest(metric="throughput", x_dimension="threads", percentile=50),

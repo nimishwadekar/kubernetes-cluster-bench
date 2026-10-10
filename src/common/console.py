@@ -7,7 +7,7 @@ from typing import TextIO
 
 @dataclass(frozen=True)
 class Colors:
-    """ANSI colors shared by the command-line tools."""
+    """Terminal colors shared by benchmark and graphing frontends."""
 
     red: str
     green: str
@@ -29,14 +29,10 @@ _NO_COLORS = Colors(red="", green="", yellow="", cyan="", orange="", reset="")
 
 
 def supports_color(stream: TextIO) -> bool:
-    """Return whether a stream is attached to a terminal."""
-
     return stream.isatty()
 
 
 def terminal_colors(*streams: TextIO) -> Colors:
-    """Enable colors when at least one output stream is attached to a terminal."""
-
     return _ANSI_COLORS if any(supports_color(stream) for stream in streams) else _NO_COLORS
 
 
@@ -48,13 +44,6 @@ def format_message(label: str, message: str, color: str, stream: TextIO) -> str:
 
 def format_error(message: str, stream: TextIO) -> str:
     return format_message("ERROR", message, _ANSI_COLORS.red, stream)
-
-
-def colored_options(options: tuple[str, ...], stream: TextIO) -> str:
-    option_text = ", ".join(options)
-    if supports_color(stream):
-        return f"{_ANSI_COLORS.yellow}{option_text}{_ANSI_COLORS.reset}"
-    return option_text
 
 
 def warning(message: str, stream: TextIO | None = None) -> None:

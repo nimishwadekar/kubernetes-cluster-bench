@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from new_src.backends.plugin import BackendPlugin
-from new_src.backends.registry import (
+from src.backends.plugin import BackendPlugin
+from src.backends.registry import (
     BackendAlreadyRegisteredError,
     BackendNotFoundError,
     BackendRegistry,

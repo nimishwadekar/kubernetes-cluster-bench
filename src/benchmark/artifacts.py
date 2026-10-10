@@ -61,7 +61,7 @@ def create_run_directory(
 ) -> Path:
     """Create the isolated raw-artifact directory for one run."""
 
-    run_directory = raw_directory / f"t{thread_count}-run{run_number}"
+    run_directory = raw_directory / f"t{thread_count}"
     run_directory.mkdir(parents=True, exist_ok=True)
     return run_directory
 

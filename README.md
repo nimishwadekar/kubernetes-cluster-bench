@@ -14,7 +14,7 @@ For a multi-node cluster, push the image to a registry accessible by every node 
 
 ## Run a benchmark
 
-The runner requires `kubectl` and a configured Kubernetes context. It deploys one server pod and one client pod, pins them to the requested nodes, collects raw output, writes canonical throughput results, and removes Kubernetes resources when finished.
+The runner requires `kubectl` and a configured Kubernetes context. It deploys one server pod and one client pod, pins them to the requested nodes, collects raw output, and removes Kubernetes resources when finished.
 
 ```bash
 ./run-benchmark.sh \
@@ -32,7 +32,7 @@ Useful options include:
 - `--warmup SECONDS` (default: `5`; duration tests only)
 - `--threads SPEC` using `start[:end[:step]]`, such as `4`, `1:4`, or `1:5:2`
 - `-r, --run COUNT` to repeat each thread-count test
-- `--test-id ID` (benchmark identity stored in metadata and Kubernetes resources)
+- `--test-id ID` (benchmark identity stored in command metadata and Kubernetes resources)
 - `--name NAME` (log directory name; defaults to the test ID)
 - `-d, --dir DIR` (default: `logs`)
 - `--namespace NAMESPACE`
@@ -45,9 +45,10 @@ Results use this layout:
 logs/iperf3/<test-directory>/
 ├── manifest.yaml
 ├── raw/
-│   ├── <thread/run>/
+│   ├── t1/
 │   │   ├── <run>-client.json
 │   │   └── <run>-command.json
+│   ├── t2/
 │   └── <test-id>-server.json
 └── graphs/
 ```
@@ -62,7 +63,7 @@ Install the Python plotting dependency:
 python3 -m pip install -r requirements.txt
 ```
 
-Plot canonical results by a numeric dimension:
+Plot raw benchmark observations by a numeric dimension:
 
 ```bash
 ./plot-benchmark.sh \

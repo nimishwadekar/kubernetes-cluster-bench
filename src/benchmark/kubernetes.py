@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-import re
-import signal
-import subprocess
-import sys
-import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
+import re
+import subprocess
 from typing import Sequence
-
-from ..common.console import Colors
-from .config import BenchmarkConfig, MANIFEST_TEMPLATE
 
 
 class KubectlError(RuntimeError):
@@ -21,257 +14,190 @@ class KubectlError(RuntimeError):
         command = "kubectl " + " ".join(arguments)
         detail = stderr.strip() or f"exit status {returncode}"
         super().__init__(f"{command} failed: {detail}")
+        self.arguments = tuple(arguments)
         self.returncode = returncode
+        self.stderr = stderr
 
 
 @dataclass(frozen=True)
-class ResourceNames:
-    """Kubernetes names generated for a benchmark run."""
+class KubectlClient:
+    """Small shared wrapper for backend Kubernetes operations."""
 
-    server_service: str
-    server_pod: str
-    client_pod: str
+    executable: str = "kubectl"
 
-    @classmethod
-    def from_test_id(cls, test_id: str) -> ResourceNames:
-        server_name = f"network-benchmark-server-{test_id}"
-        return cls(
-            server_service=server_name,
-            server_pod=server_name,
-            client_pod=f"network-benchmark-client-{test_id}",
+    def run(
+        self,
+        arguments: Sequence[str],
+        *,
+        capture_output: bool = False,
+        suppress_stdout: bool = False,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        stdout: int | None = subprocess.DEVNULL if suppress_stdout else None
+        if capture_output:
+            stdout = subprocess.PIPE
+        result = subprocess.run(
+            [self.executable, *arguments],
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=timeout,
         )
+        if result.returncode != 0:
+            stderr = result.stderr if isinstance(result.stderr, str) else ""
+            raise KubectlError(arguments, result.returncode, stderr)
+        return result
 
-    @property
-    def server_host(self) -> str:
-        return self.server_service
+    def output(self, arguments: Sequence[str]) -> str:
+        result = self.run(arguments, capture_output=True)
+        return result.stdout.rstrip("\n")
 
-    @property
-    def collision_targets(self) -> tuple[str, ...]:
-        return (
-            f"service/{self.server_service}",
-            f"pod/{self.server_pod}",
-            f"pod/{self.client_pod}",
-        )
-
-
-def kubectl_output(arguments: Sequence[str]) -> str:
-    """Run kubectl and return stdout, preserving actionable failures."""
-
-    result = subprocess.run(
-        ["kubectl", *arguments],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise KubectlError(arguments, result.returncode, result.stderr)
-    return result.stdout.rstrip("\n")
-
-
-def populate_context_namespace(config_namespace: str) -> tuple[str, str]:
-    """Read the current context and resolve the default namespace."""
-
-    try:
-        context = kubectl_output(["config", "current-context"]) or "unknown"
-    except KubectlError:
-        context = "unknown"
-
-    namespace = config_namespace
-    if not namespace:
+    def current_context(self) -> str:
         try:
-            namespace = kubectl_output(
-                ["config", "view", "--minify", "--output=jsonpath={.contexts[0].context.namespace}"]
+            return self.output(["config", "current-context"]) or "unknown"
+        except (KubectlError, OSError):
+            return "unknown"
+
+    def resolve_namespace(self, requested: str | None = None) -> str:
+        if requested:
+            return requested
+        try:
+            namespace = self.output(
+                [
+                    "config",
+                    "view",
+                    "--minify",
+                    "--output=jsonpath={.contexts[0].context.namespace}",
+                ]
             )
-        except KubectlError:
+        except (KubectlError, OSError):
             namespace = ""
-        namespace = namespace or "default"
-    return context, namespace
+        return namespace or "default"
 
+    def context_and_namespace(self, requested: str | None = None) -> tuple[str, str]:
+        return self.current_context(), self.resolve_namespace(requested)
 
-def render_manifest(config: BenchmarkConfig, rendered_manifest: Path) -> None:
-    """Substitute validated benchmark values into the Kubernetes manifest."""
-
-    manifest = MANIFEST_TEMPLATE.read_text(encoding="utf-8")
-    replacements = (
-        ("__TEST_ID__", config.test_id),
-        ("__CLIENT_NODE__", config.client_node),
-        ("__SERVER_NODE__", config.server_node),
-        ("__IMAGE__", config.image),
-    )
-    missing = [marker for marker, _ in replacements if marker not in manifest]
-    if missing:
-        raise ValueError(f"manifest is missing required placeholder(s): {', '.join(missing)}")
-    for marker, value in replacements:
-        manifest = manifest.replace(marker, value)
-    remaining = [marker for marker, _ in replacements if marker in manifest]
-    if remaining:
-        raise ValueError(f"manifest still contains placeholder(s): {', '.join(remaining)}")
-    rendered_manifest.write_text(manifest, encoding="utf-8")
-
-
-def create_rendered_manifest() -> Path:
-    """Create a temporary manifest in the platform temporary directory."""
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        prefix="iperf3-benchmark.",
-        suffix=".yaml",
-        dir=tempfile.gettempdir(),
-        delete=False,
-    ) as handle:
-        return Path(handle.name)
-
-
-def run_checked(arguments: Sequence[str], suppress_stdout: bool = False) -> None:
-    """Run kubectl with fail-fast behavior."""
-
-    stdout = subprocess.DEVNULL if suppress_stdout else None
-    subprocess.run(["kubectl", *arguments], check=True, stdout=stdout)
-
-
-def resource_exists(resource: str, namespace: str) -> bool:
-    """Return whether a resource exists, distinguishing errors from absence."""
-
-    result = subprocess.run(
-        ["kubectl", "get", "-n", namespace, resource, "--ignore-not-found", "-o", "name"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise KubectlError(result.args[1:], result.returncode, result.stderr)
-    return bool(result.stdout.strip())
-
-
-def start_server_process(
-    namespace: str,
-    server_pod: str,
-    server_log: Path,
-) -> subprocess.Popen[bytes]:
-    """Start a persistent iperf3 server for multiple client tests."""
-
-    with server_log.open("wb") as server_log_handle:
-        return subprocess.Popen(
+    def resource_exists(self, resource: str, namespace: str) -> bool:
+        result = subprocess.run(
             [
-                "kubectl",
-                "exec",
+                self.executable,
+                "get",
                 "-n",
                 namespace,
-                server_pod,
-                "--",
-                "iperf3",
-                "-s",
-                "-J",
+                resource,
+                "--ignore-not-found",
+                "-o",
+                "name",
             ],
-            stdout=server_log_handle,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise KubectlError(
+                result.args[1:],
+                result.returncode,
+                result.stderr,
+            )
+        return bool(result.stdout.strip())
+
+    def apply_manifest(self, namespace: str, manifest: Path) -> None:
+        self.run(
+            ["apply", "-n", namespace, "-f", str(manifest)],
+            suppress_stdout=True,
         )
 
+    def wait_for(
+        self,
+        namespace: str,
+        resource: str,
+        condition: str,
+        timeout_seconds: int,
+    ) -> None:
+        self.run(
+            [
+                "wait",
+                "-n",
+                namespace,
+                f"--for={condition}",
+                resource,
+                f"--timeout={timeout_seconds}s",
+            ],
+            suppress_stdout=True,
+        )
 
-def wait_for_server_start(
-    process: subprocess.Popen[bytes],
+    def delete_manifest(self, namespace: str, manifest: Path) -> bool:
+        result = subprocess.run(
+            [
+                self.executable,
+                "delete",
+                "-n",
+                namespace,
+                "-f",
+                str(manifest),
+                "--ignore-not-found",
+            ],
+            stdout=None,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+
+    def start_exec(
+        self,
+        namespace: str,
+        pod: str,
+        command: Sequence[str],
+        stdout_path: Path,
+    ) -> subprocess.Popen[bytes]:
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = stdout_path.open("wb")
+        try:
+            process = subprocess.Popen(
+                [self.executable, "exec", "-n", namespace, pod, "--", *command],
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+            )
+        except BaseException:
+            handle.close()
+            raise
+        handle.close()
+        return process
+
+
+def wait_for_tcp_listener(
+    client: KubectlClient,
     namespace: str,
-    server_pod: str,
-    timeout: float,
+    pod: str,
+    port: int,
+    process: subprocess.Popen[bytes],
+    timeout_seconds: float,
 ) -> None:
-    """Poll the server pod socket without creating benchmark traffic."""
+    """Poll a pod's listening sockets for TCP-based backends."""
 
-    deadline = time.monotonic() + timeout
-    probe = [
-        "kubectl",
-        "exec",
-        "-n",
-        namespace,
-        server_pod,
-        "--",
-        "ss",
-        "-ltn",
-    ]
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+    probe = ["exec", "-n", namespace, pod, "--", "ss", "-ltn"]
     while time.monotonic() < deadline:
         if process.poll() is not None:
             process.wait()
-            raise RuntimeError("iperf3 server exited during startup")
+            raise RuntimeError("benchmark server exited during startup")
         remaining = max(0.1, deadline - time.monotonic())
         try:
-            result = subprocess.run(
+            result = client.run(
                 probe,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                check=False,
+                capture_output=True,
                 timeout=min(2.0, remaining),
             )
-        except subprocess.TimeoutExpired:
+        except (KubectlError, subprocess.TimeoutExpired):
             continue
-        if result.returncode == 0 and re.search(r":5201(?:\s|$)", result.stdout):
+        if result.returncode == 0 and re.search(
+            rf":{port}(?:\s|$)", result.stdout
+        ):
             return
         time.sleep(0.2)
-    raise TimeoutError("timed out waiting for iperf3 server readiness")
-
-
-def terminate_process(process: subprocess.Popen[bytes] | None, timeout: float = 5.0) -> None:
-    """Send SIGTERM, then SIGKILL if a process does not exit promptly."""
-
-    if process is None or process.poll() is not None:
-        return
-    try:
-        process.send_signal(signal.SIGTERM)
-        process.wait(timeout=timeout)
-    except ProcessLookupError:
-        return
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-
-
-def cleanup_resources(
-    client_process: subprocess.Popen[bytes] | None,
-    server_process: subprocess.Popen[bytes] | None,
-    config: BenchmarkConfig,
-    colors: Colors,
-    apply_started: bool,
-    rendered_manifest: Path,
-) -> None:
-    """Stop exec sessions, clean Kubernetes resources, and remove the manifest."""
-
-    terminate_process(client_process)
-    if server_process is not None and server_process.poll() is None:
-        print(f"{colors.cyan}Stopping server benchmark session{colors.reset}")
-        terminate_process(server_process)
-        print(f"{colors.cyan}Server benchmark session stopped{colors.reset}")
-
-    try:
-        if not apply_started:
-            return
-        if config.keep_resources:
-            print(f"{colors.yellow}Keeping benchmark resources (--keep-resources){colors.reset}")
-            return
-        print(f"{colors.cyan}Cleaning up benchmark resources{colors.reset}")
-        cleanup_started = time.monotonic()
-        result = subprocess.run(
-            [
-                "kubectl",
-                "delete",
-                "-n",
-                config.namespace,
-                "-f",
-                str(rendered_manifest),
-                "--ignore-not-found",
-            ],
-            check=False,
-            text=True,
-        )
-        if result.returncode == 0:
-            cleanup_duration = int(time.monotonic() - cleanup_started)
-            print(f"{colors.green}Benchmark resources deleted ({cleanup_duration}s){colors.reset}")
-        else:
-            print(
-                f"{colors.yellow}warning:{colors.reset} failed to clean up Kubernetes "
-                f"resources for test {config.test_id}",
-                file=sys.stderr,
-            )
-    finally:
-        rendered_manifest.unlink(missing_ok=True)
+    raise TimeoutError("timed out waiting for benchmark server readiness")

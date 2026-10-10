@@ -4,13 +4,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from new_src.benchmark.contracts import BenchmarkConfig
-from new_src.benchmark.overwrite import (
+from src.benchmark.contracts import BenchmarkConfig
+from src.benchmark.overwrite import (
     OverwriteDeclined,
     confirm_overwrite,
     test_directory_path,
 )
-from new_src.common.console import Colors
+from src.common.console import Colors
 
 
 NO_COLORS = Colors("", "", "", "", "", "")

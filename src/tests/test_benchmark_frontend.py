@@ -5,15 +5,15 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from new_src.backends.plugin import BackendPlugin
-from new_src.backends.registry import BackendRegistry
-from new_src.benchmark.artifacts import BenchmarkExecution
-from new_src.benchmark.contracts import (
+from src.backends.plugin import BackendPlugin
+from src.backends.registry import BackendRegistry
+from src.benchmark.artifacts import BenchmarkExecution
+from src.benchmark.contracts import (
     BackendResources,
     BenchmarkConfig,
     RunContext,
 )
-from new_src.benchmark.orchestrator import parse_thread_spec, run_benchmark
+from src.benchmark.orchestrator import parse_thread_spec, run_benchmark
 
 
 class FakeRunner:
