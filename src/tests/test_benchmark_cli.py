@@ -70,6 +70,28 @@ class BenchmarkCliTests(unittest.TestCase):
         self.assertEqual(config.runs, 3)
         self.assertEqual(config.name, "friendly-name")
 
+    def test_nixl_uses_backend_default_image(self) -> None:
+        config = parse_config(
+            [
+                "--backend", "nixl",
+                "--client", "worker-a", "--server", "worker-b",
+            ]
+        )
+        self.assertEqual(
+            config.image,
+            "quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0",
+        )
+
+    def test_explicit_image_overrides_backend_default(self) -> None:
+        config = parse_config(
+            [
+                "--backend", "nixl",
+                "--client", "worker-a", "--server", "worker-b",
+                "--image", "example/custom:nixl",
+            ]
+        )
+        self.assertEqual(config.image, "example/custom:nixl")
+
     def test_default_name_uses_test_id(self) -> None:
         config = parse_config(
             [

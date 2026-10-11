@@ -42,7 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="NODE",
     )
-    parser.add_argument("--image", default=DEFAULT_IMAGE, metavar="IMAGE")
+    parser.add_argument(
+        "--image",
+        default=None,
+        metavar="IMAGE",
+        help="Container image (backend default when omitted).",
+    )
     parser.add_argument("-d", "--dir", dest="log_directory", type=Path, default=Path("logs"))
     parser.add_argument("-n", "--namespace", default=None, metavar="NAMESPACE")
     parser.add_argument("--benchmark", default="benchmark", metavar="NAME")
@@ -70,7 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_config(arguments: Sequence[str] | None = None) -> BenchmarkConfig:
+def parse_config(
+    arguments: Sequence[str] | None = None,
+    registry: BackendRegistry | None = None,
+) -> BenchmarkConfig:
     args = build_parser().parse_args(arguments)
     if args.initiator_node == args.target_node:
         raise ValueError("initiator and target nodes must be different")
@@ -90,6 +98,14 @@ def parse_config(arguments: Sequence[str] | None = None) -> BenchmarkConfig:
     if args.warmup is not None:
         parameters["warmup_seconds"] = args.warmup
     parameters.update(_parse_parameters(args.parameter))
+    image = args.image
+    if image is None:
+        selected_registry = registry or default_registry()
+        image = (
+            selected_registry.get(args.backend).default_image
+            if selected_registry.contains(args.backend)
+            else None
+        ) or DEFAULT_IMAGE
     kube_context, namespace = KubectlClient().context_and_namespace(args.namespace)
     return BenchmarkConfig(
         backend=args.backend,
@@ -98,7 +114,7 @@ def parse_config(arguments: Sequence[str] | None = None) -> BenchmarkConfig:
         initiator_node=args.initiator_node,
         target_node=args.target_node,
         namespace=namespace,
-        image=args.image,
+        image=image,
         log_directory=args.log_directory,
         name=args.name,
         kube_context=kube_context,
@@ -116,7 +132,7 @@ def main(
     colors = terminal_colors(sys.stdout, sys.stderr)
     try:
         selected_registry = registry or default_registry()
-        config = parse_config(arguments)
+        config = parse_config(arguments, selected_registry)
         confirm_overwrite(config, colors=colors)
         execution = run_benchmark(
             config,

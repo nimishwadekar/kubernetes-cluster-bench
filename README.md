@@ -76,6 +76,43 @@ Plot raw benchmark observations by a numeric dimension:
 
 `--backend` selects the registered analyzer and `--name` selects `logs/<backend>/<name>`. Both are required. Only throughput is currently supported. If a result does not contain the requested dimension, graphing fails instead of silently skipping that result. By default, graphs are written to the selected test directory's `graphs/` subdirectory.
 
+When other dimensions vary, graphing rejects the request as ambiguous instead of silently averaging unrelated configurations. Use `--filter NAME=VALUE` to select one value, or `--series DIMENSION` to draw a separate line for each value.
+
 ## NIXLBench with UCX
 
-GPU KV-cache transfer benchmarking assets are available in [`nixl/`](./nixl/). See [`nixl/README.md`](./nixl/README.md) for the version-pinned image build and Kubernetes deployment instructions.
+GPU buffer-transfer benchmarking is available through the same frontend. When `--image` is omitted, the NIXL backend uses `quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0`:
+
+```bash
+./run-benchmark.sh \
+  --backend nixl \
+  --initiator worker-a \
+  --target worker-b \
+  --name vram-ucx \
+  --threads 1:4 \
+  --parameter initiator_seg_type=VRAM \
+  --parameter target_seg_type=VRAM
+```
+
+Plot NIXL rows by block size for a selected batch size:
+
+```bash
+./plot-benchmark.sh \
+  --backend nixl \
+  --name vram-ucx \
+  --x block_size_bytes \
+  --filter batch_size=8 \
+  --filter threads=4
+```
+
+Or compare batch sizes as separate lines:
+
+```bash
+./plot-benchmark.sh \
+  --backend nixl \
+  --name vram-ucx \
+  --x block_size_bytes \
+  --filter threads=4 \
+  --series batch_size
+```
+
+NIXL rejects ambiguous plots when a non-X dimension varies without a filter or series. NIXL artifacts use `initiator.log`, `target.log`, and command metadata under `raw/tTHREADS/`. GPU image-build assets remain in [`nixl/`](./nixl/).

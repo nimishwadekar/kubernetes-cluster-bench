@@ -88,8 +88,10 @@ class BackendRegistry:
 def default_registry() -> BackendRegistry:
     """Build the registry of currently bundled backend plugins."""
 
-    from .iperf3.plugin import create_plugin
+    from .iperf3.plugin import create_plugin as create_iperf3_plugin
+    from .nixl.plugin import create_plugin as create_nixl_plugin
 
     registry = BackendRegistry()
-    registry.register(create_plugin())
+    registry.register(create_iperf3_plugin())
+    registry.register(create_nixl_plugin())
     return registry

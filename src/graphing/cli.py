@@ -46,7 +46,10 @@ def build_parser() -> GraphArgumentParser:
         action="append",
         default=[],
         metavar="NAME=VALUE",
-        help="Filter observations; may be repeated.",
+        help=(
+            "Fix a dimension to one value; use for dimensions that are not "
+            "the X axis or a series. May be repeated."
+        ),
     )
     parser.add_argument(
         "--series",
@@ -54,7 +57,10 @@ def build_parser() -> GraphArgumentParser:
         default=[],
         dest="series_dimensions",
         metavar="DIMENSION",
-        help="Make separate graph series for a dimension; may be repeated.",
+        help=(
+            "Plot a separate line for each value of this dimension; use instead "
+            "of filtering when comparison is desired. May be repeated."
+        ),
     )
     parser.add_argument("--percentile", type=percentile, default=None, metavar="PERCENT")
     parser.add_argument("--max-throughput", type=positive_float, default=None, metavar="GBIT/S")
