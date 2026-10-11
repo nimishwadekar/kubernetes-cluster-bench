@@ -10,39 +10,50 @@ Build the image and make it available to the nodes that will run the benchmark:
 docker build -t kubernetes-cluster-bench:local .
 ```
 
-For a multi-node cluster, push the image to a registry accessible by every node and pass that image with `--image`.
+For a multi-node cluster, push the image to a registry accessible by every node and set the required image in the benchmark profile.
 
 ## Run a benchmark
 
 The runner requires `kubectl` and a configured Kubernetes context. It deploys one server pod and one client pod, pins them to the requested nodes, collects raw output, and removes Kubernetes resources when finished.
 
 ```bash
-./run-benchmark.sh \
-  --backend iperf3 \
-  --client worker-a \
-  --server worker-b \
-  --name run-a \
-  --threads 1:4 \
-  --run 3
+./run-benchmark.sh --profile profiles/pirate-iperf3.yaml
 ```
 
-Useful options include:
+The benchmark frontend accepts only `--profile FILE` and `--help`; benchmark settings belong in the profile.
 
-- `--duration SECONDS` (default: `10` measured seconds)
-- `--warmup SECONDS` (default: `5`; duration tests only)
-- `--threads SPEC` using `start[:end[:step]]`, such as `4`, `1:4`, or `1:5:2`
-- `-r, --run COUNT` to repeat each thread-count test
-- `--test-id ID` (benchmark identity stored in command metadata and Kubernetes resources)
-- `--name NAME` (log directory name; defaults to the test ID)
-- `-d, --dir DIR` (default: `logs`)
-- `--namespace NAMESPACE`
-- `--image IMAGE`
-- `--keep-resources`
+For example:
+
+```bash
+./run-benchmark.sh --profile profiles/pirate-iperf3.yaml
+```
+
+A profile contains the benchmark settings:
+
+```yaml
+backend: iperf3
+name: pirate-iperf3
+nodes:
+  initiator: a100-03
+  target: a100-04
+dimensions:
+  threads: "1:4"
+execution:
+  namespace: nwadekar-pirate
+  image: quay.io/nwadekar/kubernetes-cluster-bench:latest
+  log_directory: logs
+  runs: 3
+  timeout_seconds: 120
+  keep_resources: false
+  iperf3:
+    duration_seconds: 5
+    warmup_seconds: 1
+```
 
 Results use this layout:
 
 ```text
-logs/iperf3/<test-directory>/
+logs/<test-directory>/
 ├── manifest.yaml
 ├── raw/
 │   ├── t1/
@@ -74,23 +85,15 @@ Plot raw benchmark observations by a numeric dimension:
   --max-throughput 200
 ```
 
-`--backend` selects the registered analyzer and `--name` selects `logs/<backend>/<name>`. Both are required. Only throughput is currently supported. If a result does not contain the requested dimension, graphing fails instead of silently skipping that result. By default, graphs are written to the selected test directory's `graphs/` subdirectory.
-
+`--backend` selects the registered analyzer and `--name` selects `logs/<name>`. Both are required. Only throughput is currently supported. If a result does not contain the requested dimension, graphing fails instead of silently skipping that result. By default, graphs are written to the selected test directory's `graphs/` subdirectory.
 When other dimensions vary, graphing rejects the request as ambiguous instead of silently averaging unrelated configurations. Use `--filter NAME=VALUE` to select one value, or `--series DIMENSION` to draw a separate line for each value.
 
 ## NIXLBench with UCX
 
-GPU buffer-transfer benchmarking is available through the same frontend. When `--image` is omitted, the NIXL backend uses `quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0`:
+GPU buffer-transfer benchmarking is available through the same profile-based frontend. The example profile uses `quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0`:
 
 ```bash
-./run-benchmark.sh \
-  --backend nixl \
-  --initiator worker-a \
-  --target worker-b \
-  --name vram-ucx \
-  --threads 1:4 \
-  --parameter initiator_seg_type=VRAM \
-  --parameter target_seg_type=VRAM
+./run-benchmark.sh --profile profiles/pirate-nixl.yaml
 ```
 
 Plot NIXL rows by block size for a selected batch size:
@@ -98,7 +101,7 @@ Plot NIXL rows by block size for a selected batch size:
 ```bash
 ./plot-benchmark.sh \
   --backend nixl \
-  --name vram-ucx \
+  --name pirate-nixl \
   --x block_size_bytes \
   --filter batch_size=8 \
   --filter threads=4
@@ -109,7 +112,7 @@ Or compare batch sizes as separate lines:
 ```bash
 ./plot-benchmark.sh \
   --backend nixl \
-  --name vram-ucx \
+  --name pirate-nixl \
   --x block_size_bytes \
   --filter threads=4 \
   --series batch_size

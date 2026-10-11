@@ -18,7 +18,6 @@ class Iperf3PluginTests(unittest.TestCase):
     def make_config(self, **parameters: object) -> BenchmarkConfig:
         return BenchmarkConfig(
             backend="iperf3",
-            benchmark="network-throughput",
             test_id="test-1",
             initiator_node="worker-a",
             target_node="worker-b",
@@ -33,7 +32,6 @@ class Iperf3PluginTests(unittest.TestCase):
         run_directory.mkdir(parents=True, exist_ok=True)
         command = {
             "backend": "iperf3",
-            "benchmark": "network-throughput",
             "test_id": "test-1",
             "run_number": run_number,
             "kube_context": "context",
@@ -87,10 +85,6 @@ class Iperf3PluginTests(unittest.TestCase):
                 "--get-server-output", "-t", "15", "-O", "5",
             ],
         )
-        transfer_config = self.make_config(threads=2, transfer_size="1M")
-        transfer_command = runner.client_command(transfer_config, resources)
-        self.assertEqual(transfer_command[-2:], ["-n", "1M"])
-
     def test_parser_preserves_intervals_and_marks_legacy_validity(self) -> None:
         parser = Iperf3Parser()
         with tempfile.TemporaryDirectory() as directory:

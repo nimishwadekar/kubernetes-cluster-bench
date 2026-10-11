@@ -20,7 +20,6 @@ class OverwriteTests(unittest.TestCase):
     def make_config(self, directory: Path) -> BenchmarkConfig:
         return BenchmarkConfig(
             backend="iperf3",
-            benchmark="network-throughput",
             test_id="test-id",
             initiator_node="worker-a",
             target_node="worker-b",

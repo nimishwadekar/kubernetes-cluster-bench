@@ -77,7 +77,6 @@ class BenchmarkFrontendTests(unittest.TestCase):
     def make_config(self, directory: Path, runs: int = 2) -> BenchmarkConfig:
         return BenchmarkConfig(
             backend="fake",
-            benchmark="network-throughput",
             test_id="test-1",
             initiator_node="worker-a",
             target_node="worker-b",

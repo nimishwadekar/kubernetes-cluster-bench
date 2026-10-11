@@ -22,7 +22,6 @@ class BenchmarkConfig:
     """Backend-independent configuration supplied by the benchmark frontend."""
 
     backend: str
-    benchmark: str
     test_id: str
     initiator_node: str
     target_node: str
@@ -39,7 +38,6 @@ class BenchmarkConfig:
     def __post_init__(self) -> None:
         for field_name in (
             "backend",
-            "benchmark",
             "test_id",
             "initiator_node",
             "target_node",

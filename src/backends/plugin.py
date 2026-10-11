@@ -19,13 +19,10 @@ class BackendPlugin:
     runner_factory: Callable[[], BenchmarkRunner] | None = None
     analyzer_factory: Callable[[], ResultAnalyzer] | None = None
     description: str = ""
-    default_image: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("backend plugin name must not be empty")
-        if self.default_image is not None and not self.default_image:
-            raise ValueError("backend plugin default_image must not be empty")
 
     def create_runner(self) -> BenchmarkRunner:
         if self.runner_factory is None:

@@ -19,7 +19,6 @@ class NixlPluginTests(unittest.TestCase):
     def make_config(self) -> BenchmarkConfig:
         return BenchmarkConfig(
             backend="nixl",
-            benchmark="gpu-buffer-transfer",
             test_id="nixl-test",
             initiator_node="worker-a",
             target_node="worker-b",
@@ -41,7 +40,6 @@ class NixlPluginTests(unittest.TestCase):
         )
         command = {
             "backend": "nixl",
-            "benchmark": "gpu-buffer-transfer",
             "test_id": "nixl-test",
             "run_number": 1,
             "parameters": {"num_threads": threads},

@@ -15,7 +15,7 @@ class OverwriteDeclined(Exception):
 def test_directory_path(config: BenchmarkConfig) -> Path:
     """Return the filesystem directory for a benchmark name."""
 
-    return config.log_directory / config.backend / config.output_name
+    return config.log_directory / config.output_name
 
 
 def confirm_overwrite(

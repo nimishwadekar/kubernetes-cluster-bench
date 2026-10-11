@@ -40,29 +40,27 @@ class CliRunner:
 
 
 class BenchmarkCliTests(unittest.TestCase):
-    def test_parse_config_keeps_common_and_backend_parameters(self) -> None:
-        config = parse_config(
-            [
-                "--backend",
-                "fake",
-                "--client",
-                "worker-a",
-                "--server",
-                "worker-b",
-                "--test-id",
-                "test-1",
-                "--name",
-                "friendly-name",
-                "--threads",
-                "1:4:2",
-                "--run",
-                "3",
-                "--parameter",
-                "runtime=ASIO",
-                "--parameter",
-                "num_iter=1000",
-            ]
-        )
+    def test_parse_config_reads_common_and_backend_parameters(self) -> None:
+        profile = """\
+backend: fake
+name: friendly-name
+test_id: test-1
+nodes:
+  initiator: worker-a
+  target: worker-b
+dimensions:
+  threads: "1:4:2"
+execution:
+  image: example/fake:latest
+  runs: 3
+  fake:
+    runtime: ASIO
+    num_iter: 1000
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            config = parse_config(["--profile", str(profile_path)])
         self.assertEqual(config.parameters["threads"], 1)
         self.assertEqual(config.parameters["threads_spec"], "1:4:2")
         self.assertEqual(config.parameters["runtime"], "ASIO")
@@ -70,95 +68,111 @@ class BenchmarkCliTests(unittest.TestCase):
         self.assertEqual(config.runs, 3)
         self.assertEqual(config.name, "friendly-name")
 
-    def test_nixl_uses_backend_default_image(self) -> None:
-        config = parse_config(
-            [
-                "--backend", "nixl",
-                "--client", "worker-a", "--server", "worker-b",
-            ]
-        )
-        self.assertEqual(
-            config.image,
-            "quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0",
-        )
+    def test_profile_uses_declared_image(self) -> None:
+        profile = """\
+backend: nixl
+nodes:
+  initiator: worker-a
+  target: worker-b
+dimensions:
+  threads: 1
+execution:
+  namespace: bench
+  image: example/nixl:latest
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "nixl.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            config = parse_config(["--profile", str(profile_path)])
+        self.assertEqual(config.image, "example/nixl:latest")
 
-    def test_explicit_image_overrides_backend_default(self) -> None:
-        config = parse_config(
-            [
-                "--backend", "nixl",
-                "--client", "worker-a", "--server", "worker-b",
-                "--image", "example/custom:nixl",
-            ]
-        )
-        self.assertEqual(config.image, "example/custom:nixl")
+    def test_missing_image_is_rejected(self) -> None:
+        profile = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution: {}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "missing-image.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "execution.image"):
+                parse_config(["--profile", str(profile_path)])
 
     def test_default_name_uses_test_id(self) -> None:
-        config = parse_config(
-            [
-                "--backend", "iperf3",
-                "--client", "worker-a", "--server", "worker-b", "--test-id", "test-1"
-            ]
-        )
+        profile = """\
+backend: iperf3
+test_id: test-1
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/iperf3:latest
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "iperf3.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            config = parse_config(["--profile", str(profile_path)])
         self.assertEqual(config.output_name, "test-1")
 
     def test_parse_iperf3_duration_options(self) -> None:
-        config = parse_config(
-            [
-                "--backend", "iperf3",
-                "--client", "worker-a",
-                "--server", "worker-b",
-                "--duration", "5",
-                "--warmup", "2",
-            ]
-        )
+        profile = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+dimensions:
+  threads: 1
+execution:
+  image: example/iperf3:latest
+  iperf3:
+    duration_seconds: 5
+    warmup_seconds: 2
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "iperf3.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            config = parse_config(["--profile", str(profile_path)])
         self.assertEqual(config.parameters["duration_seconds"], 5)
         self.assertEqual(config.parameters["warmup_seconds"], 2)
-
-    def test_duration_and_transfer_size_are_mutually_exclusive(self) -> None:
-        with self.assertRaises(ValueError):
-            parse_config(
-                [
-                    "--backend", "iperf3",
-                    "--client", "worker-a",
-                    "--server", "worker-b",
-                    "--duration", "5",
-                    "--transfer-size", "1M",
-                ]
-            )
 
     def test_main_dispatches_through_registry(self) -> None:
         registry = BackendRegistry(
             (BackendPlugin(name="fake", runner_factory=CliRunner),)
         )
         with tempfile.TemporaryDirectory() as directory:
-            status = main(
-                [
-                    "--backend",
-                    "fake",
-                    "--client",
-                    "worker-a",
-                    "--server",
-                    "worker-b",
-                    "--test-id",
-                    "test-1",
-                    "--dir",
-                    directory,
-                ],
-                registry,
+            profile_path = Path(directory) / "fake.yaml"
+            profile_path.write_text(
+                f"""\
+backend: fake
+test_id: test-1
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/fake:latest
+  log_directory: {directory}
+""",
+                encoding="utf-8",
             )
+            status = main(["--profile", str(profile_path)], registry)
         self.assertEqual(status, 0)
 
     def test_equal_nodes_are_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            parse_config(
-                [
-                    "--backend", "iperf3",
-                    "--client",
-                    "worker-a",
-                    "--server",
-                    "worker-a",
-                ]
-            )
+        profile = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-a
+execution:
+  image: example/iperf3:latest
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "invalid.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                parse_config(["--profile", str(profile_path)])
 
 
 if __name__ == "__main__":

@@ -13,5 +13,4 @@ def create_plugin() -> BackendPlugin:
         runner_factory=NixlRunner,
         analyzer_factory=NixlAnalyzer,
         description="GPU buffer-transfer benchmark using NIXLBench",
-        default_image="quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0",
     )

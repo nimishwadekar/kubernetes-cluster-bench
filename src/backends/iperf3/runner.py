@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, cast
+from typing import Mapping
 
 from ...benchmark.artifacts import write_json
 from ...benchmark.contracts import (
@@ -52,21 +51,12 @@ class Iperf3Runner(BenchmarkRunner):
         if not _positive_int(threads):
             raise ValueError("iperf3 threads must be a positive integer")
 
-        transfer_size = parameters.get("transfer_size")
-        if transfer_size is not None:
-            if not isinstance(transfer_size, str) or not _valid_transfer_size(transfer_size):
-                raise ValueError("--transfer-size must look like 1G, 500M, or 100K")
-            if parameters.get("duration_seconds") is not None:
-                raise ValueError("--duration and --transfer-size cannot be used together")
-            if parameters.get("warmup_seconds") is not None:
-                raise ValueError("--warmup requires --duration")
-        else:
-            duration = parameters.get("duration_seconds", 10)
-            if not _positive_int(duration):
-                raise ValueError("--duration must be a positive integer")
-            warmup = parameters.get("warmup_seconds", 5)
-            if not _nonnegative_int(warmup):
-                raise ValueError("--warmup must be a non-negative integer")
+        duration = parameters.get("duration_seconds", 10)
+        if not _positive_int(duration):
+            raise ValueError("duration_seconds must be a positive integer")
+        warmup = parameters.get("warmup_seconds", 5)
+        if not _nonnegative_int(warmup):
+            raise ValueError("warmup_seconds must be a non-negative integer")
 
         if not self.manifest_template.is_file():
             raise ValueError(f"iperf3 manifest not found: {self.manifest_template}")
@@ -142,7 +132,6 @@ class Iperf3Runner(BenchmarkRunner):
         server_command = self.server_command(config, resources)
         command_metadata: dict[str, JsonValue] = {
             "backend": self.name,
-            "benchmark": config.benchmark,
             "test_id": config.test_id,
             "run_number": run_number,
             "kube_context": config.kube_context,
@@ -258,13 +247,9 @@ class Iperf3Runner(BenchmarkRunner):
             str(thread_count),
             "--get-server-output",
         ]
-        transfer_size = config.parameters.get("transfer_size")
-        if transfer_size is not None:
-            command.extend(["-n", cast(str, transfer_size)])
-        else:
-            duration = int(config.parameters.get("duration_seconds", 10))
-            warmup = int(config.parameters.get("warmup_seconds", 5))
-            command.extend(["-t", str(duration + warmup), "-O", str(warmup)])
+        duration = int(config.parameters.get("duration_seconds", 10))
+        warmup = int(config.parameters.get("warmup_seconds", 5))
+        command.extend(["-t", str(duration + warmup), "-O", str(warmup)])
         return command
 
     def server_command(
@@ -307,11 +292,7 @@ class Iperf3Runner(BenchmarkRunner):
         config: BenchmarkConfig,
         context: RunContext | None,
     ) -> int:
-        if (
-            context is None
-            or not sys.stdout.isatty()
-            or config.parameters.get("transfer_size") is not None
-        ):
+        if context is None or not sys.stdout.isatty():
             status = process.wait()
             return status if status >= 0 else 128 + (-status)
 
@@ -388,10 +369,3 @@ def _positive_int(value: object) -> bool:
 
 def _nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _valid_transfer_size(value: str) -> bool:
-    if re.fullmatch(r"[0-9]+[KMGTP]?", value) is None:
-        return False
-    number = value if value.isdigit() else value[:-1]
-    return int(number) > 0

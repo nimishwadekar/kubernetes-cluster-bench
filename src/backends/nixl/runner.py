@@ -142,7 +142,6 @@ class NixlRunner(BenchmarkRunner):
         args = self._nixl_args(parameters, resources.names["initiator_ip"])
         metadata: dict[str, JsonValue] = {
             "backend": self.name,
-            "benchmark": config.benchmark,
             "test_id": config.test_id,
             "run_number": run_number,
             "kube_context": config.kube_context,

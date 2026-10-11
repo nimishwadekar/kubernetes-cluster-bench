@@ -33,7 +33,7 @@ class SharedFactoringTests(unittest.TestCase):
     def test_artifact_helpers_create_backend_neutral_layout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             test_directory, raw_directory = create_test_directory(
-                Path(directory), "iperf3", "test-1"
+                Path(directory), "test-1"
             )
             run_directory = create_run_directory(raw_directory, 2, 3)
             artifact = run_directory / "command.json"
@@ -41,7 +41,7 @@ class SharedFactoringTests(unittest.TestCase):
 
             self.assertEqual(
                 run_directory,
-                Path(directory) / "iperf3" / "test-1" / "raw" / "t2",
+                Path(directory) / "test-1" / "raw" / "t2",
             )
             self.assertEqual(json.loads(artifact.read_text())["threads"], 2)
             self.assertEqual(test_directory / "raw", raw_directory)

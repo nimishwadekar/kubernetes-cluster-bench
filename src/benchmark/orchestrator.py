@@ -60,7 +60,6 @@ def run_benchmark(
     total_runs = len(thread_values) * config.runs
     test_directory, raw_root = create_test_directory(
         config.log_directory,
-        config.backend,
         config.output_name,
     )
     manifest_path = test_directory / "manifest.yaml"

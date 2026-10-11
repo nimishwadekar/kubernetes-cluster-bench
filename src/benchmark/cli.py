@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import json
 import os
 from pathlib import Path
 import sys
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from ..backends.registry import BackendRegistry, default_registry
 from ..common.console import terminal_colors
@@ -15,9 +14,7 @@ from .kubernetes import KubectlClient
 from .contracts import BenchmarkConfig
 from .overwrite import OverwriteDeclined, confirm_overwrite
 from .orchestrator import run_benchmark
-
-
-DEFAULT_IMAGE = "quay.io/nwadekar/kubernetes-cluster-bench:latest"
+from .profile import load_profile, profile_section
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,102 +22,73 @@ def build_parser() -> argparse.ArgumentParser:
         prog="run-benchmark.sh",
         description="Run a registered Kubernetes benchmark backend.",
     )
-    parser.add_argument("--backend", required=True, metavar="BACKEND")
     parser.add_argument(
-        "-c",
-        "--client",
-        "--initiator",
-        dest="initiator_node",
+        "--profile",
+        type=Path,
         required=True,
-        metavar="NODE",
+        metavar="FILE",
+        help="Benchmark profile YAML file.",
     )
-    parser.add_argument(
-        "-s",
-        "--server",
-        "--target",
-        dest="target_node",
-        required=True,
-        metavar="NODE",
-    )
-    parser.add_argument(
-        "--image",
-        default=None,
-        metavar="IMAGE",
-        help="Container image (backend default when omitted).",
-    )
-    parser.add_argument("-d", "--dir", dest="log_directory", type=Path, default=Path("logs"))
-    parser.add_argument("-n", "--namespace", default=None, metavar="NAMESPACE")
-    parser.add_argument("--benchmark", default="benchmark", metavar="NAME")
-    parser.add_argument("--test-id", default=None, metavar="ID")
-    parser.add_argument(
-        "--name",
-        default=None,
-        metavar="NAME",
-        help="Log directory name (default: test ID).",
-    )
-    parser.add_argument("--duration", type=positive_int, default=None, metavar="SECONDS")
-    parser.add_argument("--transfer-size", default=None, metavar="SIZE")
-    parser.add_argument("--warmup", type=nonnegative_int, default=None, metavar="SECONDS")
-    parser.add_argument("--threads", default="1", metavar="SPEC")
-    parser.add_argument("-r", "--run", dest="runs", type=positive_int, default=1)
-    parser.add_argument("--timeout", type=positive_int, default=120, metavar="SECONDS")
-    parser.add_argument(
-        "--parameter",
-        action="append",
-        default=[],
-        metavar="NAME=VALUE",
-        help="Backend parameter; may be repeated.",
-    )
-    parser.add_argument("--keep-resources", action="store_true")
     return parser
 
 
-def parse_config(
-    arguments: Sequence[str] | None = None,
-    registry: BackendRegistry | None = None,
-) -> BenchmarkConfig:
+def parse_config(arguments: Sequence[str] | None = None) -> BenchmarkConfig:
     args = build_parser().parse_args(arguments)
-    if args.initiator_node == args.target_node:
+    profile = load_profile(args.profile)
+    nodes = profile_section(profile, "nodes")
+    dimensions = profile_section(profile, "dimensions")
+    execution = profile_section(profile, "execution")
+
+    backend = _profile_string(profile, "backend")
+    if backend is None:
+        raise ValueError("profile field 'backend' is required")
+    backend_parameters = profile_section(execution, backend)
+    parameters: dict[str, JsonValue] = {}
+    for name, value in backend_parameters.items():
+        if not isinstance(value, (str, int, float, bool)) and value is not None:
+            raise ValueError(f"profile parameter {name!r} must be a scalar")
+        parameters[name] = value  # type: ignore[assignment]
+
+    initiator_node = _profile_string(nodes, "initiator")
+    target_node = _profile_string(nodes, "target")
+    if initiator_node is None or target_node is None:
+        raise ValueError("profile must provide nodes.initiator and nodes.target")
+    if initiator_node == target_node:
         raise ValueError("initiator and target nodes must be different")
-    thread_values = _parse_thread_spec(args.threads)
-    if args.duration is not None and args.transfer_size is not None:
-        raise ValueError("--duration and --transfer-size cannot be used together")
-    if args.warmup is not None and args.transfer_size is not None:
-        raise ValueError("--warmup requires --duration")
-    parameters: dict[str, JsonValue] = {
-        "threads": thread_values[0],
-        "threads_spec": args.threads,
-    }
-    if args.duration is not None:
-        parameters["duration_seconds"] = args.duration
-    if args.transfer_size is not None:
-        parameters["transfer_size"] = args.transfer_size
-    if args.warmup is not None:
-        parameters["warmup_seconds"] = args.warmup
-    parameters.update(_parse_parameters(args.parameter))
-    image = args.image
+
+    threads_spec = _profile_thread_spec(dimensions.get("threads"))
+    thread_values = _parse_thread_spec(threads_spec)
+    parameters["threads"] = thread_values[0]
+    parameters["threads_spec"] = threads_spec
+
+    image = _profile_string(execution, "image")
     if image is None:
-        selected_registry = registry or default_registry()
-        image = (
-            selected_registry.get(args.backend).default_image
-            if selected_registry.contains(args.backend)
-            else None
-        ) or DEFAULT_IMAGE
-    kube_context, namespace = KubectlClient().context_and_namespace(args.namespace)
+        raise ValueError("profile field 'execution.image' is required")
+    namespace = _profile_string(execution, "namespace")
+    kube_context, namespace = KubectlClient().context_and_namespace(namespace)
+    log_directory = Path(_profile_string(execution, "log_directory") or "logs")
+    name = _profile_string(profile, "name")
+    test_id = _profile_string(profile, "test_id") or _default_test_id()
+    runs = _profile_positive_int(execution.get("runs"), "runs", default=1)
+    timeout = _profile_positive_int(
+        execution.get("timeout_seconds"), "timeout_seconds", default=120
+    )
+    keep_resources = _profile_bool(
+        execution.get("keep_resources"), "keep_resources", default=False
+    )
     return BenchmarkConfig(
-        backend=args.backend,
-        benchmark=args.benchmark,
-        test_id=args.test_id or _default_test_id(),
-        initiator_node=args.initiator_node,
-        target_node=args.target_node,
+        backend=backend,
+        test_id=test_id,
+        initiator_node=initiator_node,
+        target_node=target_node,
         namespace=namespace,
         image=image,
-        log_directory=args.log_directory,
-        name=args.name,
+        log_directory=log_directory,
+        name=name,
         kube_context=kube_context,
-        runs=args.runs,
-        timeout_seconds=args.timeout,
-        keep_resources=args.keep_resources,
+        runs=runs,
+        timeout_seconds=timeout,
+        keep_resources=keep_resources,
         parameters=parameters,
     )
 
@@ -132,7 +100,7 @@ def main(
     colors = terminal_colors(sys.stdout, sys.stderr)
     try:
         selected_registry = registry or default_registry()
-        config = parse_config(arguments, selected_registry)
+        config = parse_config(arguments)
         confirm_overwrite(config, colors=colors)
         execution = run_benchmark(
             config,
@@ -157,24 +125,53 @@ def main(
     return 0
 
 
-def positive_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("must be an integer") from error
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be positive")
-    return parsed
+def _profile_string(
+    section: Mapping[str, object],
+    name: str,
+) -> str | None:
+    value = section.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"profile field {name!r} must be a non-empty string")
+    return value
 
 
-def nonnegative_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("must be an integer") from error
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be non-negative")
-    return parsed
+def _profile_thread_spec(value: object) -> str:
+    if value is None:
+        return "1"
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError("profile field 'threads' must be a string or integer")
+    text = str(value)
+    if not text:
+        raise ValueError("profile field 'threads' must not be empty")
+    return text
+
+
+def _profile_positive_int(
+    value: object,
+    name: str,
+    *,
+    default: int,
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"profile field {name!r} must be a positive integer")
+    return value
+
+
+def _profile_bool(
+    value: object,
+    name: str,
+    *,
+    default: bool,
+) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"profile field {name!r} must be boolean")
+    return value
 
 
 def _parse_thread_spec(value: str) -> tuple[int, ...]:
@@ -188,24 +185,6 @@ def _parse_thread_spec(value: str) -> tuple[int, ...]:
     if start < 1 or end < start or step < 1:
         raise ValueError("threads must use positive values with start <= end")
     return tuple(range(start, end + 1, step))
-
-
-def _parse_parameters(values: Sequence[str]) -> dict[str, JsonValue]:
-    parameters: dict[str, JsonValue] = {}
-    for value in values:
-        if "=" not in value:
-            raise ValueError("--parameter must use NAME=VALUE")
-        name, raw_value = value.split("=", 1)
-        if not name:
-            raise ValueError("--parameter name must not be empty")
-        try:
-            parsed: object = json.loads(raw_value)
-        except json.JSONDecodeError:
-            parsed = raw_value
-        if not isinstance(parsed, (str, int, float, bool)) and parsed is not None:
-            raise ValueError(f"--parameter {name!r} must be a scalar JSON value")
-        parameters[name] = parsed  # type: ignore[assignment]
-    return parameters
 
 
 def _default_test_id() -> str:

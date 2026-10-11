@@ -18,12 +18,7 @@ def display_path(path: Path) -> str:
 
 
 def print_configuration(config: BenchmarkConfig, colors: Colors) -> None:
-    duration_set = config.parameters.get("transfer_size") is None
     duration = config.parameters.get("duration_seconds", 10)
-    duration_display = f"{duration} seconds" if duration_set else "N/A"
-    transfer_display = (
-        "N/A" if duration_set else str(config.parameters.get("transfer_size", ""))
-    )
     print(f"\n{colors.cyan}Benchmark configuration{colors.reset}")
     print(f"  {'Test ID:':<20} {config.test_id}")
     print(f"  {'Kubernetes context:':<20} {config.kube_context}")
@@ -33,10 +28,8 @@ def print_configuration(config: BenchmarkConfig, colors: Colors) -> None:
     print(f"  {'Logs directory:':<20} {config.log_directory}")
     print(f"  {'Image:':<20} {config.image}")
     print(f"  {'Protocol:':<20} TCP")
-    print(f"  {'Duration:':<20} {duration_display}")
-    if duration_set:
-        print(f"  {'Warmup:':<20} {config.parameters.get('warmup_seconds', 5)} seconds")
-    print(f"  {'Transfer size:':<20} {transfer_display}")
+    print(f"  {'Duration:':<20} {duration} seconds")
+    print(f"  {'Warmup:':<20} {config.parameters.get('warmup_seconds', 5)} seconds")
     print(f"  {'Threads:':<20} {config.parameters.get('threads_spec', '1')}")
     print(f"  {'Runs per test:':<20} {config.runs}\n")
 

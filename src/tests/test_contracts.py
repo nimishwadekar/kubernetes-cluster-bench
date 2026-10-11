@@ -29,7 +29,6 @@ class ContractTests(unittest.TestCase):
     def test_benchmark_contracts_own_execution_types(self) -> None:
         config = BenchmarkConfig(
             backend="iperf3",
-            benchmark="network-throughput",
             test_id="test-1",
             initiator_node="worker-a",
             target_node="worker-b",

@@ -43,12 +43,11 @@ class BenchmarkExecution:
 
 def create_test_directory(
     log_directory: Path,
-    backend: str,
     test_id: str,
 ) -> tuple[Path, Path]:
     """Create and return a test directory and its raw-artifact directory."""
 
-    test_directory = log_directory / backend / test_id
+    test_directory = log_directory / test_id
     raw_directory = test_directory / "raw"
     raw_directory.mkdir(parents=True, exist_ok=True)
     return test_directory, raw_directory

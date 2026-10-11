@@ -89,7 +89,7 @@ def main(
             series_dimensions=tuple(args.series_dimensions),
             percentile=args.percentile,
         )
-        test_directory = args.directory / args.backend / args.name
+        test_directory = args.directory / args.name
         observations = load_observations(
             args.backend,
             test_directory,
@@ -167,12 +167,8 @@ def _parse_scalar(value: str) -> DimensionValue:
 
 
 def _canonical_dimension(dimension: str) -> str:
-    if dimension == "transfer_size":
-        return "transfer_size_bytes"
     return dimension
 
 
 def _label(dimension: str) -> str:
-    if dimension == "transfer_size_bytes":
-        return "Transfer size"
     return dimension.replace("_", " ").capitalize()

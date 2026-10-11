@@ -59,12 +59,8 @@ class Iperf3Parser:
 
             parameters = _parameters(metadata)
             threads = _thread_count(client, parameters)
-            transfer_size = parameters.get("transfer_size")
             dimensions: dict[str, int] = {"threads": threads}
             dimension_labels: dict[str, str] = {"threads": str(threads)}
-            if isinstance(transfer_size, str):
-                dimensions["transfer_size_bytes"] = _transfer_size_bytes(transfer_size)
-                dimension_labels["transfer_size_bytes"] = transfer_size
 
             server_output = _object(client.get("server_output_json"), "server_output_json")
             intervals = server_output.get("intervals")
@@ -182,11 +178,3 @@ def _positive_or_default(value: object, default: int) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return default
-
-
-def _transfer_size_bytes(value: str) -> int:
-    units = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5}
-    suffix = value[-1].upper()
-    if suffix in units:
-        return int(value[:-1]) * units[suffix]
-    return int(value)
