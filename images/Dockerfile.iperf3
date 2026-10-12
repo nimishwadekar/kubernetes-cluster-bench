@@ -1,0 +1,28 @@
+# ============================================================================
+# Current active networking-only image
+# ============================================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        apt-transport-https \
+        iproute2 \
+        lshw \
+        pciutils \
+        ethtool \
+        net-tools \
+        htop \
+        vim \
+        less \
+        iperf \
+        iperf3 \
+        tcpdump \
+        iputils-ping \
+        cpufrequtils \
+        numactl && \
+    rm -rf /var/lib/apt/lists/*
+
+CMD ["/bin/bash"]
