@@ -58,7 +58,8 @@ class NixlParser:
                 if match is None:
                     continue
                 block_size, batch_size, gb_per_second = match.groups()
-                throughput = float(gb_per_second) * 1e9
+                # NIXL reports decimal gigabytes per second; canonical throughput is bit/s.
+                throughput = float(gb_per_second) * 8e9
                 if not math.isfinite(throughput):
                     raise ValueError(f"non-finite NIXL throughput in {initiator_path}")
                 observations.append(

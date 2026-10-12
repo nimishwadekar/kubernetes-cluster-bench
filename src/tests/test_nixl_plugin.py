@@ -72,7 +72,7 @@ class NixlPluginTests(unittest.TestCase):
         self.assertEqual(observations[0].dimensions["threads"], 2)
         self.assertEqual(observations[0].dimensions["block_size_bytes"], 4194304)
         self.assertEqual(observations[0].dimensions["batch_size"], 1)
-        self.assertAlmostEqual(observations[0].value, 1.575178e9)
+        self.assertAlmostEqual(observations[0].value, 1.575178e9 * 8)
 
     def test_analyzer_requires_filter_or_series_for_varying_dimensions(self) -> None:
         parser = NixlParser()
@@ -102,7 +102,7 @@ class NixlPluginTests(unittest.TestCase):
             )
         self.assertEqual(len(points), 5)
         self.assertEqual(points[0].x_value, 4194304)
-        self.assertEqual(points[0].y_value, 2.294085)
+        self.assertEqual(points[0].y_value, 2.294085 * 8)
 
     def test_runner_passes_calculated_buffer_and_runtime_arguments(self) -> None:
         runner = NixlRunner()
