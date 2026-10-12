@@ -9,7 +9,7 @@
 #
 # Build for the GPU nodes' architecture:
 #   docker buildx build --platform linux/amd64 \
-#     -f nixl/Dockerfile.vllm-nixlbench \
+#     -f images/Dockerfile.nixl \
 #     -t nixlbench:vllm-0.31.0-nixl-1.4.1 \
 #     --load .
 

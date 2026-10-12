@@ -12,7 +12,7 @@ from ...graphing.contracts import Observation
 
 JsonObject = Mapping[str, object]
 _ROW_RE = re.compile(
-    r"^\s*(\d+)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?)\s+"
+    r"^\s*(\d+)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?)(?:\s+|$)"
 )
 _THREADS_RE = re.compile(r"Num threads \([^)]*\)\s*:\s*(\d+)")
 

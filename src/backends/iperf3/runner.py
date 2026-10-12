@@ -23,7 +23,7 @@ from ...common.types import JsonValue
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_MANIFEST = PROJECT_ROOT / "network-benchmark.yaml"
+DEFAULT_MANIFEST = PROJECT_ROOT / "manifests" / "iperf3-template.yaml"
 MAX_CLIENT_ATTEMPTS = 3
 PROGRESS_WIDTH = 30
 

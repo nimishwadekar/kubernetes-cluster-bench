@@ -20,7 +20,7 @@ from ...common.types import JsonValue
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_MANIFEST = PROJECT_ROOT / "nixl" / "nixl-benchmark.yaml"
+DEFAULT_MANIFEST = PROJECT_ROOT / "manifests" / "nixl-template.yaml"
 class NixlRunner(BenchmarkRunner):
     """Run NIXLBench initiator and target processes on two GPU pods."""
 

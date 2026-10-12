@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
 import tempfile
 import unittest
 
@@ -13,6 +12,36 @@ from src.backends.nixl.runner import NixlRunner
 from src.backends.registry import default_registry
 from src.benchmark.contracts import BackendResources, BenchmarkConfig
 from src.graphing.contracts import AnalysisRequest
+
+
+NIXL_INITIATOR_FIXTURE = """\
+Num threads (--num_threads=N)                               : 2
+Block Size (B)      Batch Size     B/W (GB/Sec)   Avg Lat. (us)
+4194304             1              1.575178
+4194304             2              2.123026
+4194304             4              2.349421
+4194304             8              2.294085
+8388608             1              2.301086
+8388608             2              1.972920
+8388608             4              2.034126
+8388608             8              2.397880
+16777216            1              2.096955
+16777216            2              1.779816
+16777216            4              2.431657
+16777216            8              2.439225
+33554432            1              2.410953
+33554432            2              2.419340
+33554432            4              2.445068
+33554432            8              2.436507
+67108864            1              2.425439
+67108864            2              2.446416
+67108864            4              2.445558
+67108864            8              2.447944
+"""
+NIXL_TARGET_FIXTURE = """\
+Using address 10.130.3.43 port 12345 for ASIO runtime
+All processes are ready to proceed
+"""
 
 
 class NixlPluginTests(unittest.TestCase):
@@ -32,11 +61,13 @@ class NixlPluginTests(unittest.TestCase):
         raw = directory / "raw"
         run = raw / f"t{threads}"
         run.mkdir(parents=True)
-        source = Path(__file__).parents[2] / "nixl" / f"server-t{threads}.log"
-        shutil.copyfile(source, run / "nixl-test-t2-run1-initiator.log")
-        shutil.copyfile(
-            Path(__file__).parents[2] / "nixl" / "client.log",
-            run / "nixl-test-t2-run1-target.log",
+        (run / "nixl-test-t2-run1-initiator.log").write_text(
+            NIXL_INITIATOR_FIXTURE,
+            encoding="utf-8",
+        )
+        (run / "nixl-test-t2-run1-target.log").write_text(
+            NIXL_TARGET_FIXTURE,
+            encoding="utf-8",
         )
         command = {
             "backend": "nixl",

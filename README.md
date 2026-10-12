@@ -7,7 +7,7 @@ Basic framework for measuring network performance between Kubernetes pods with `
 Build the image and make it available to the nodes that will run the benchmark:
 
 ```bash
-docker build -t kubernetes-cluster-bench:local .
+docker build -f images/Dockerfile.iperf3 -t kubernetes-cluster-bench:local .
 ```
 
 For a multi-node cluster, push the image to a registry accessible by every node and set the required image in the benchmark profile.
