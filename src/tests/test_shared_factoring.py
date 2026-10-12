@@ -20,6 +20,7 @@ from src.graphing.contracts import (
     Observation,
 )
 from src.graphing.renderer import GraphRenderConfig, render_graph
+from src.graphing.cli import _validate_dimensions
 from src.graphing.selection import numeric_dimension, select_observations
 from src.graphing.statistics import (
     mean,
@@ -53,6 +54,12 @@ class SharedFactoringTests(unittest.TestCase):
         self.assertEqual(mean_and_standard_deviation((2.0,)), (2.0, 0.0))
         self.assertEqual(percentile(values, 50), 2.0)
         self.assertAlmostEqual(percentile(values, 75), 3.0)
+
+    def test_graph_dimensions_are_backend_declared(self) -> None:
+        supported = frozenset({"threads", "block_size_bytes"})
+        _validate_dimensions(supported, "block_size_bytes", ["threads=1"], ())
+        with self.assertRaisesRegex(ValueError, "unsupported graph dimension"):
+            _validate_dimensions(supported, "batch_size", (), ())
 
     def test_selection_filters_and_requires_dimensions(self) -> None:
         observations = (

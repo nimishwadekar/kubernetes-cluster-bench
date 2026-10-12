@@ -19,6 +19,10 @@ class BackendPlugin:
     runner_factory: Callable[[], BenchmarkRunner] | None = None
     analyzer_factory: Callable[[], ResultAnalyzer] | None = None
     description: str = ""
+    profile_options: frozenset[str] = frozenset()
+    profile_dimensions: frozenset[str] = frozenset()
+    graph_dimensions: frozenset[str] = frozenset()
+    framework_repeats: bool = True
 
     def __post_init__(self) -> None:
         if not self.name:

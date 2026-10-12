@@ -17,6 +17,13 @@ from .orchestrator import run_benchmark
 from .profile import load_profile, profile_section
 
 
+COMMON_PROFILE_FIELDS = frozenset({"backend", "name", "test_id", "nodes", "dimensions", "execution"})
+COMMON_NODE_FIELDS = frozenset({"initiator", "target"})
+COMMON_EXECUTION_FIELDS = frozenset(
+    {"namespace", "image", "log_directory", "runs", "timeout_seconds", "keep_resources"}
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="run-benchmark.sh",
@@ -32,22 +39,51 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_config(arguments: Sequence[str] | None = None) -> BenchmarkConfig:
+def parse_config(
+    arguments: Sequence[str] | None = None,
+    registry: BackendRegistry | None = None,
+) -> BenchmarkConfig:
     args = build_parser().parse_args(arguments)
     profile = load_profile(args.profile)
+    _reject_unknown_fields(profile, COMMON_PROFILE_FIELDS, "profile")
     nodes = profile_section(profile, "nodes")
+    _reject_unknown_fields(nodes, COMMON_NODE_FIELDS, "profile.nodes")
     dimensions = profile_section(profile, "dimensions")
     execution = profile_section(profile, "execution")
 
     backend = _profile_string(profile, "backend")
     if backend is None:
         raise ValueError("profile field 'backend' is required")
+    selected_registry = registry or default_registry()
+    plugin = selected_registry.get(backend)
     backend_parameters = profile_section(execution, backend)
+    _reject_unknown_fields(
+        execution,
+        COMMON_EXECUTION_FIELDS | {backend},
+        "profile.execution",
+    )
+    _reject_unknown_fields(
+        dimensions,
+        plugin.profile_dimensions,
+        "profile.dimensions",
+    )
+    _reject_unknown_fields(
+        backend_parameters,
+        plugin.profile_options,
+        f"profile.execution.{backend}",
+    )
     parameters: dict[str, JsonValue] = {}
     for name, value in backend_parameters.items():
         if not isinstance(value, (str, int, float, bool)) and value is not None:
             raise ValueError(f"profile parameter {name!r} must be a scalar")
         parameters[name] = value  # type: ignore[assignment]
+    if backend == "nixl":
+        _profile_nonnegative_int(
+            backend_parameters.get("warmup_runs"),
+            "warmup_runs",
+            required=True,
+            location="execution.nixl",
+        )
 
     initiator_node = _profile_string(nodes, "initiator")
     target_node = _profile_string(nodes, "target")
@@ -60,7 +96,13 @@ def parse_config(arguments: Sequence[str] | None = None) -> BenchmarkConfig:
     thread_values = _parse_thread_spec(threads_spec)
     parameters["threads"] = thread_values[0]
     parameters["threads_spec"] = threads_spec
-
+    if backend == "nixl":
+        for dimension_name in ("block_size", "batch_size"):
+            start, maximum = _profile_range_bounds(
+                dimensions.get(dimension_name), dimension_name
+            )
+            parameters[f"{dimension_name}_start"] = start
+            parameters[f"{dimension_name}_max"] = maximum
     image = _profile_string(execution, "image")
     if image is None:
         raise ValueError("profile field 'execution.image' is required")
@@ -100,7 +142,7 @@ def main(
     colors = terminal_colors(sys.stdout, sys.stderr)
     try:
         selected_registry = registry or default_registry()
-        config = parse_config(arguments)
+        config = parse_config(arguments, selected_registry)
         confirm_overwrite(config, colors=colors)
         execution = run_benchmark(
             config,
@@ -125,6 +167,18 @@ def main(
     return 0
 
 
+def _reject_unknown_fields(
+    section: Mapping[str, object],
+    allowed: frozenset[str],
+    location: str,
+) -> None:
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ValueError(
+            f"unsupported field(s) in {location}: {', '.join(unknown)}"
+        )
+
+
 def _profile_string(
     section: Mapping[str, object],
     name: str,
@@ -137,6 +191,58 @@ def _profile_string(
     return value
 
 
+def _profile_range_bounds(value: object, name: str) -> tuple[int, int]:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(
+            f"profile field 'dimensions.{name}' must be an integer or range"
+        )
+    parts = str(value).split(":")
+    if len(parts) not in (1, 2):
+        raise ValueError(
+            f"profile field 'dimensions.{name}' must use VALUE or START:MAX"
+        )
+    try:
+        numbers = [_parse_dimension_number(part, name) for part in parts]
+    except ValueError as error:
+        raise ValueError(
+            f"profile field 'dimensions.{name}' must use valid positive values"
+        ) from error
+    start = numbers[0]
+    maximum = start if len(numbers) == 1 else numbers[1]
+    if start < 1 or maximum < start:
+        raise ValueError(
+            f"profile field 'dimensions.{name}' must use positive values with start <= max"
+        )
+    if name in {"block_size", "batch_size"}:
+        if not _is_power_of_two(start) or not _is_power_of_two(maximum):
+            raise ValueError(
+                f"profile field 'dimensions.{name}' must use powers of two"
+            )
+        ratio = maximum // start
+        if maximum % start != 0 or not _is_power_of_two(ratio):
+            raise ValueError(
+                f"profile field 'dimensions.{name}' must increase by powers of two"
+            )
+    return start, maximum
+
+
+def _is_power_of_two(value: int) -> bool:
+    return value > 0 and (value & (value - 1)) == 0
+
+
+def _parse_dimension_number(value: str, name: str) -> int:
+    if name != "block_size":
+        if not value.isdigit():
+            raise ValueError(value)
+        return int(value)
+    suffix = value[-1:].upper()
+    multiplier = {"K": 1024, "M": 1024**2, "G": 1024**3}.get(suffix, 1)
+    number = value[:-1] if suffix in {"K", "M", "G"} else value
+    if not number.isdigit():
+        raise ValueError(value)
+    return int(number) * multiplier
+
+
 def _profile_thread_spec(value: object) -> str:
     if value is None:
         return "1"
@@ -146,6 +252,22 @@ def _profile_thread_spec(value: object) -> str:
     if not text:
         raise ValueError("profile field 'threads' must not be empty")
     return text
+
+
+def _profile_nonnegative_int(
+    value: object,
+    name: str,
+    *,
+    required: bool = False,
+    location: str = "execution",
+) -> int:
+    if value is None:
+        if required:
+            raise ValueError(f"profile field '{location}.{name}' is required")
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"profile field {name!r} must be a non-negative integer")
+    return value
 
 
 def _profile_positive_int(

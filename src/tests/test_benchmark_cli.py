@@ -49,7 +49,7 @@ nodes:
   initiator: worker-a
   target: worker-b
 dimensions:
-  threads: "1:4:2"
+  threads: 1:4:2
 execution:
   image: example/fake:latest
   runs: 3
@@ -57,10 +57,19 @@ execution:
     runtime: ASIO
     num_iter: 1000
 """
+        registry = BackendRegistry(
+            (
+                BackendPlugin(
+                    name="fake",
+                    profile_options=frozenset({"runtime", "num_iter"}),
+                    profile_dimensions=frozenset({"threads"}),
+                ),
+            )
+        )
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "profile.yaml"
             profile_path.write_text(profile, encoding="utf-8")
-            config = parse_config(["--profile", str(profile_path)])
+            config = parse_config(["--profile", str(profile_path)], registry)
         self.assertEqual(config.parameters["threads"], 1)
         self.assertEqual(config.parameters["threads_spec"], "1:4:2")
         self.assertEqual(config.parameters["runtime"], "ASIO")
@@ -76,15 +85,44 @@ nodes:
   target: worker-b
 dimensions:
   threads: 1
+  block_size: "4M:64M"
+  batch_size: "1:8"
 execution:
   namespace: bench
   image: example/nixl:latest
+  nixl:
+    warmup_runs: 10
 """
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "nixl.yaml"
             profile_path.write_text(profile, encoding="utf-8")
             config = parse_config(["--profile", str(profile_path)])
         self.assertEqual(config.image, "example/nixl:latest")
+        self.assertEqual(config.parameters["block_size_start"], 4194304)
+        self.assertEqual(config.parameters["block_size_max"], 67108864)
+        self.assertEqual(config.parameters["batch_size_start"], 1)
+        self.assertEqual(config.parameters["batch_size_max"], 8)
+
+    def test_nixl_dimensions_require_power_of_two_ranges(self) -> None:
+        profile = """\
+backend: nixl
+nodes:
+  initiator: worker-a
+  target: worker-b
+dimensions:
+  threads: 1
+  block_size: "3M:64M"
+  batch_size: "1:8"
+execution:
+  image: example/nixl:latest
+  nixl:
+    warmup_runs: 10
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "invalid-nixl.yaml"
+            profile_path.write_text(profile, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "powers of two"):
+                parse_config(["--profile", str(profile_path)])
 
     def test_missing_image_is_rejected(self) -> None:
         profile = """\

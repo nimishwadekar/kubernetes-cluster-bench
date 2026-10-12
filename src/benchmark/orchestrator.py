@@ -15,7 +15,7 @@ from .artifacts import (
     create_test_directory,
 )
 from .contracts import BenchmarkConfig, RunContext
-from .output import print_configuration, print_results
+from .output import print_configuration, print_results, print_run_dimensions
 
 
 Report = Callable[[str], None]
@@ -57,13 +57,22 @@ def run_benchmark(
     runner.validate(config)
 
     thread_values = _thread_values(config.parameters)
-    total_runs = len(thread_values) * config.runs
+    run_numbers = (
+        tuple(range(1, config.runs + 1))
+        if plugin.framework_repeats
+        else (1,)
+    )
+    total_runs = len(thread_values) * len(run_numbers)
     test_directory, raw_root = create_test_directory(
         config.log_directory,
         config.output_name,
     )
     manifest_path = test_directory / "manifest.yaml"
-    print_configuration(config, output_colors)
+    print_configuration(
+        config,
+        output_colors,
+        framework_repeats=plugin.framework_repeats,
+    )
     runner.render_manifest(config, manifest_path)
 
     resources = None
@@ -74,7 +83,7 @@ def run_benchmark(
         print(f"{output_colors.cyan}Network service created{output_colors.reset}")
         print(f"{output_colors.cyan}Server and client pods running{output_colors.reset}")
         for thread_count in thread_values:
-            for run_number in range(1, config.runs + 1):
+            for run_number in run_numbers:
                 parameters = dict(config.parameters)
                 parameters["threads"] = thread_count
                 parameters["run_number"] = run_number
@@ -84,6 +93,7 @@ def run_benchmark(
                     thread_count,
                     run_number,
                 )
+                print_run_dimensions(iteration_config, output_colors)
                 context = RunContext(
                     completed_runs=completed_runs,
                     total_runs=total_runs,

@@ -25,7 +25,7 @@ class NixlPluginTests(unittest.TestCase):
             namespace="bench",
             image="example/nixl:latest",
             log_directory=Path("logs"),
-            parameters={"num_iter": 50, "warmup_iter": 10},
+            parameters={"warmup_runs": 10},
         )
 
     def make_fixture(self, directory: Path, threads: int = 2) -> Path:
@@ -58,6 +58,10 @@ class NixlPluginTests(unittest.TestCase):
         self.assertIsInstance(plugin.create_runner(), NixlRunner)
         self.assertIsInstance(plugin.create_analyzer(), NixlAnalyzer)
         self.assertIn("nixl", default_registry().names())
+        self.assertEqual(
+            plugin.graph_dimensions,
+            frozenset({"threads", "block_size", "batch_size"}),
+        )
 
     def test_parser_reads_twenty_table_rows(self) -> None:
         parser = NixlParser()
@@ -100,6 +104,28 @@ class NixlPluginTests(unittest.TestCase):
         self.assertEqual(points[0].x_value, 4194304)
         self.assertEqual(points[0].y_value, 2.294085)
 
+    def test_runner_passes_calculated_buffer_and_runtime_arguments(self) -> None:
+        runner = NixlRunner()
+        args = runner._nixl_args(2, 50, 10, 1073741824, 4194304, 67108864, 1, 8, "10.0.0.1")
+        self.assertEqual(
+            args,
+            [
+                "--runtime_type", "ASIO",
+                "--asio_address", "10.0.0.1",
+                "--asio_port", "12345",
+                "--backend", "UCX",
+                "--initiator_seg_type", "DRAM",
+                "--target_seg_type", "DRAM",
+                "--total_buffer_size", "1073741824",
+                "--start_block_size", "4194304",
+                "--max_block_size", "67108864",
+                "--start_batch_size", "1",
+                "--max_batch_size", "8",
+                "--num_threads", "2",
+                "--num_iter", "50",
+                "--warmup_iter", "10",
+            ],
+        )
     def test_runner_renders_manifest_with_role_mapping(self) -> None:
         runner = NixlRunner()
         with tempfile.TemporaryDirectory() as directory:

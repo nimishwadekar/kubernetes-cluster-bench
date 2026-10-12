@@ -95,14 +95,18 @@ class Iperf3Runner(BenchmarkRunner):
                 raise ValueError(
                     f"resource already exists: {resource}; retry with a clean namespace"
                 )
-        self.kubectl.apply_manifest(config.namespace, manifest)
-        for pod in (names["server_pod"], names["client_pod"]):
-            self.kubectl.wait_for(
-                config.namespace,
-                f"pod/{pod}",
-                "jsonpath={.status.phase}=Running",
-                config.timeout_seconds,
-            )
+        try:
+            self.kubectl.apply_manifest(config.namespace, manifest)
+            for pod in (names["server_pod"], names["client_pod"]):
+                self.kubectl.wait_for(
+                    config.namespace,
+                    f"pod/{pod}",
+                    "jsonpath={.status.phase}=Running",
+                    config.timeout_seconds,
+                )
+        except BaseException:
+            self.kubectl.delete_manifest(config.namespace, manifest)
+            raise
         return BackendResources(
             names={
                 "server_service": names["server_service"],

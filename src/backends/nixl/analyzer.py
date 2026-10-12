@@ -42,7 +42,10 @@ class NixlAnalyzer(ResultAnalyzer):
             if len(values) > 1:
                 varying_hidden.add(dimension)
         if varying_hidden:
-            names = ", ".join(sorted(varying_hidden))
+            names = ", ".join(
+                _profile_dimension_name(dimension)
+                for dimension in sorted(varying_hidden)
+            )
             raise ValueError(
                 f"NIXL dimensions vary ({names}); add --filter or --series"
             )
@@ -52,7 +55,8 @@ class NixlAnalyzer(ResultAnalyzer):
         for observation in selected:
             x_value = numeric_dimension(observation, request.x_dimension)
             series_key = tuple(
-                f"{dimension}={observation.dimensions[dimension]}"
+                f"{_profile_dimension_name(dimension)}="
+                f"{_format_dimension_value(dimension, observation.dimensions[dimension])}"
                 for dimension in request.series_dimensions
             )
             group_key = (x_value, series_key)
@@ -76,7 +80,22 @@ class NixlAnalyzer(ResultAnalyzer):
         return tuple(points)
 
 
+def _profile_dimension_name(dimension: str) -> str:
+    if dimension == "block_size_bytes":
+        return "block_size"
+    return dimension
+
+
+def _format_dimension_value(dimension: str, value: object) -> str:
+    if dimension == "block_size_bytes" and isinstance(value, (int, float)):
+        number = int(value)
+        for suffix, multiplier in (("G", 1024**3), ("M", 1024**2), ("K", 1024)):
+            if number % multiplier == 0:
+                return f"{number // multiplier}{suffix}"
+    return str(value)
+
+
 def _x_label(observation: Observation, dimension: str, value: float) -> str:
     if dimension == "block_size_bytes":
-        return str(int(value))
+        return _format_dimension_value(dimension, value)
     return str(int(value)) if value.is_integer() else str(value)

@@ -64,6 +64,7 @@ class Iperf3PluginTests(unittest.TestCase):
         self.assertEqual(plugin.name, "iperf3")
         self.assertIsInstance(plugin.create_runner(), Iperf3Runner)
         self.assertIsInstance(plugin.create_analyzer(), Iperf3Analyzer)
+        self.assertEqual(plugin.graph_dimensions, frozenset({"threads"}))
         self.assertIn("iperf3", default_registry().names())
 
     def test_runner_commands_match_legacy_iperf3_commands(self) -> None:

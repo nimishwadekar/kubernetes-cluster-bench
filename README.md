@@ -50,6 +50,8 @@ execution:
     warmup_seconds: 1
 ```
 
+Profile validation is split between the framework and the selected backend. Common fields are `backend`, `name`, `test_id`, `nodes.initiator`, `nodes.target`, `dimensions.threads`, `execution.namespace`, `execution.image`, `execution.log_directory`, `execution.runs`, `execution.timeout_seconds`, and `execution.keep_resources`. The iperf3 backend exposes `execution.iperf3.duration_seconds` and `execution.iperf3.warmup_seconds`; the NIXL backend exposes `execution.nixl.warmup_runs`. Both backends expose `dimensions.threads`; NIXL additionally exposes `dimensions.block_size` and `dimensions.batch_size`. These NIXL ranges are translated to the corresponding `_start` and `_max` flags; `block_size` accepts `K`, `M`, and `G` suffixes as powers of 1024, both NIXL ranges must increase through powers of two, and the framework automatically calculates and passes the minimum valid `total_buffer_size` for each thread count (`max_block_size × max_batch_size × threads`, assuming one initiator/target device), and only declared profile dimensions may be used for graphing. Other profile fields are rejected. For iperf3, `execution.runs` controls repeated framework runs; for NIXL, it controls `--num_iter` and NIXL executes once per thread dimension.
+
 Results use this layout:
 
 ```text
@@ -85,7 +87,7 @@ Plot raw benchmark observations by a numeric dimension:
   --max-throughput 200
 ```
 
-`--backend` selects the registered analyzer and `--name` selects `logs/<name>`. Both are required. Only throughput is currently supported. If a result does not contain the requested dimension, graphing fails instead of silently skipping that result. By default, graphs are written to the selected test directory's `graphs/` subdirectory.
+`--backend` selects the registered analyzer and `--name` selects `logs/<name>`. Both are required. Only throughput is currently supported. Each backend declares the dimensions it exposes to graphing; requesting another `--x`, `--filter`, or `--series` dimension is rejected. If a result does not contain a declared requested dimension, graphing also fails instead of silently skipping that result. By default, graphs are written to the selected test directory's `graphs/` subdirectory.
 When other dimensions vary, graphing rejects the request as ambiguous instead of silently averaging unrelated configurations. Use `--filter NAME=VALUE` to select one value, or `--series DIMENSION` to draw a separate line for each value.
 
 ## NIXLBench with UCX
