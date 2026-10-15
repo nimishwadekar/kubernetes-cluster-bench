@@ -1,0 +1,32 @@
+# iperf3 TCP throughput profile template.
+#
+# Copy to profiles/local/ (git-ignored), fill in the <placeholders>, then run:
+#   cp profiles/iperf3-template.yaml profiles/local/my-iperf3.yaml
+#   ./run-benchmark.sh --profile profiles/local/my-iperf3.yaml
+
+backend: iperf3
+
+# Dataset name: results go to <log_directory>/<name>/ (asked before overwriting).
+name: my-iperf3
+
+# Optional: stable identity for Kubernetes resource names (generated if omitted).
+# test_id: my-iperf3-1
+
+nodes:
+  initiator: <initiator-node>   # kubectl get nodes
+  target: <target-node>         # must differ from the initiator
+
+dimensions:
+  threads: "1:4"                # iperf3 -P N, swept as start[:end[:step]]
+
+execution:
+  namespace: <namespace>        # optional: defaults to the current kubectl context namespace
+  image: <registry>/kubernetes-cluster-bench:iperf3   # built from images/Dockerfile.iperf3
+  log_directory: logs
+  runs: 3                       # repeated runs per thread count
+  timeout_seconds: 120          # pod readiness / server startup
+  keep_resources: false
+  # max_consecutive_failures: 5 # abort after N failed runs in a row (0 disables)
+  iperf3:
+    duration_seconds: 5
+    warmup_seconds: 1

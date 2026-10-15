@@ -146,6 +146,15 @@ execution:
         with self.assertRaises(ValueError):
             load("  max_consecutive_failures: -1\n")
 
+    def test_profile_templates_load(self) -> None:
+        profiles = Path(__file__).resolve().parents[2] / "profiles"
+        for backend in ("iperf3", "nixl"):
+            config = parse_config(
+                ["--profile", str(profiles / f"{backend}-template.yaml")]
+            )
+            self.assertEqual(config.backend, backend)
+            self.assertNotEqual(config.initiator_node, config.target_node)
+
     def test_missing_image_is_rejected(self) -> None:
         profile = """\
 backend: iperf3

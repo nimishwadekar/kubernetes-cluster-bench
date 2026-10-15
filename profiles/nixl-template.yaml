@@ -1,0 +1,34 @@
+# NIXLBench (GPU nodes, UCX over TCP) profile template.
+#
+# Copy to profiles/local/ (git-ignored), fill in the <placeholders>, then run:
+#   cp profiles/nixl-template.yaml profiles/local/my-nixl.yaml
+#   ./run-benchmark.sh --profile profiles/local/my-nixl.yaml
+
+backend: nixl
+
+# Dataset name: results go to <log_directory>/<name>/ (asked before overwriting).
+name: my-nixl
+
+# Optional: stable identity for Kubernetes resource names (generated if omitted).
+# test_id: my-nixl-1
+
+nodes:
+  initiator: <initiator-node>   # needs a free nvidia.com/gpu
+  target: <target-node>         # must differ from the initiator
+
+dimensions:
+  threads: "1:8"
+  block_size: "1K:8M"           # powers of two; K/M/G suffixes (base 1024)
+  batch_size: "1:8"             # powers of two
+
+execution:
+  namespace: <namespace>        # optional: defaults to the current kubectl context namespace
+  image: <registry>/nixl-benchmark:<tag>   # built from images/Dockerfile.nixl
+  log_directory: logs
+  runs: 100                     # passed to NIXLBench as --num_iter
+  timeout_seconds: 120          # pod readiness / initiator startup
+  keep_resources: false
+  # max_consecutive_failures: 5 # abort after N failed runs in a row (0 disables)
+  nixl:
+    warmup_runs: 10
+    # run_timeout_seconds: 1800 # kill a NIXLBench execution that exceeds this

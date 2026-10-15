@@ -82,11 +82,15 @@ The benchmark frontend intentionally accepts only two options:
 --help
 ```
 
-All benchmark settings belong in the profile. Run a benchmark with:
+All benchmark settings belong in the profile. Start from a template and keep your own cluster-specific copy in `profiles/local/`, which is git-ignored:
 
 ```bash
-./run-benchmark.sh --profile profiles/pirate-iperf3.yaml
+cp profiles/iperf3-template.yaml profiles/local/my-iperf3.yaml   # or nixl-template.yaml
+$EDITOR profiles/local/my-iperf3.yaml                            # fill in nodes, namespace, image
+./run-benchmark.sh --profile profiles/local/my-iperf3.yaml
 ```
+
+The templates ([iperf3](./profiles/iperf3-template.yaml), [nixl](./profiles/nixl-template.yaml)) are commented and are checked by the test suite, so they always load. The other files in `profiles/` (`pirate-*.yaml`) are fixed profiles for a specific cluster and are kept as reproducible examples only.
 
 The runner creates a rendered manifest under the selected output directory, deploys backend resources, runs the configured dimensions, stores raw artifacts, and removes resources unless `keep_resources` is true. Deployment cleanup is attempted even when startup is interrupted.
 
@@ -105,20 +109,20 @@ A profile contains six conceptual parts:
 
 ```yaml
 backend: iperf3
-name: pirate-iperf3-test
+name: my-iperf3
 
 test_id: optional-stable-id
 
 nodes:
-  initiator: a100-03
-  target: a100-04
+  initiator: <initiator-node>
+  target: <target-node>
 
 dimensions:
   threads: "1:4"
 
 execution:
-  namespace: nwadekar-pirate
-  image: quay.io/nwadekar/kubernetes-cluster-bench:latest
+  namespace: <namespace>
+  image: <registry>/kubernetes-cluster-bench:iperf3
   log_directory: logs
   runs: 3
   timeout_seconds: 120
@@ -134,11 +138,11 @@ execution:
 
 ```yaml
 backend: nixl
-name: pirate-nixl
+name: my-nixl
 
 nodes:
-  initiator: a100-03
-  target: a100-04
+  initiator: <initiator-node>
+  target: <target-node>
 
 dimensions:
   threads: "1:4"
@@ -146,8 +150,8 @@ dimensions:
   batch_size: "1:8"
 
 execution:
-  namespace: nwadekar-pirate
-  image: quay.io/nwadekar/nixl-benchmark:og-nixl1.4.1-ucx1.22.0
+  namespace: <namespace>
+  image: <registry>/nixl-benchmark:<tag>
   log_directory: logs
   runs: 100
   timeout_seconds: 120
@@ -249,7 +253,7 @@ Example for iperf3:
 ```bash
 ./plot-benchmark.sh \
   --backend iperf3 \
-  --name pirate-iperf3-test \
+  --name my-iperf3 \
   --x threads
 ```
 
@@ -258,7 +262,7 @@ Example for one NIXL configuration:
 ```bash
 ./plot-benchmark.sh \
   --backend nixl \
-  --name pirate-nixl \
+  --name my-nixl \
   --x threads \
   --filter block_size=4M \
   --filter batch_size=1
@@ -269,7 +273,7 @@ Compare batch sizes as separate series:
 ```bash
 ./plot-benchmark.sh \
   --backend nixl \
-  --name pirate-nixl \
+  --name my-nixl \
   --x threads \
   --filter block_size=4M \
   --series batch_size
@@ -280,7 +284,7 @@ Compare block sizes as separate series:
 ```bash
 ./plot-benchmark.sh \
   --backend nixl \
-  --name pirate-nixl \
+  --name my-nixl \
   --x threads \
   --filter batch_size=1 \
   --series block_size
@@ -291,7 +295,7 @@ Plot block size on a logarithmic axis with base 2:
 ```bash
 ./plot-benchmark.sh \
   --backend nixl \
-  --name pirate-nixl \
+  --name my-nixl \
   --x block_size \
   --filter batch_size=1 \
   --filter threads=1 \
@@ -331,7 +335,7 @@ Use `--output FILE` to choose another path. Use `--title TEXT` to override the g
 ```text
 images/       Backend image Dockerfiles
 manifests/    Backend Kubernetes manifest templates
-profiles/     Reproducible benchmark profiles
+profiles/     Profile templates (profiles/local/ is git-ignored for your own)
 src/          Framework, backends, graphing, and tests
 logs/         Benchmark datasets and generated graphs
 ```
