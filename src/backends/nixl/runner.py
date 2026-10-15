@@ -14,6 +14,12 @@ from ...benchmark.contracts import (
     RunContext,
 )
 from ...benchmark.kubernetes import KubectlClient
+from ...benchmark.network import (
+    apply_secondary_network,
+    discover_addresses,
+    set_container_env,
+    verify_attachments,
+)
 from ...benchmark.process import terminate_process
 from ...benchmark.resources import apply_resources
 from ...common.console import Colors
@@ -84,6 +90,18 @@ class NixlRunner(BenchmarkRunner):
                 "NIXL manifest still contains placeholder(s): "
                 + ", ".join(remaining)
             )
+        if config.network is not None:
+            names = self.resource_names(config)
+            roles = {names["initiator_pod"]: "initiator", names["target_pod"]: "target"}
+            manifest = apply_secondary_network(manifest, config.network, roles)
+            # UCX would otherwise be free to carry the data over eth0.
+            manifest = set_container_env(
+                manifest,
+                {
+                    pod: {"UCX_NET_DEVICES": config.network.for_role(role).interface}
+                    for pod, role in roles.items()
+                },
+            )
         if not config.resources.is_empty:
             manifest = apply_resources(manifest, config.resources)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +110,8 @@ class NixlRunner(BenchmarkRunner):
     def deploy(self, config: BenchmarkConfig, manifest: Path) -> BackendResources:
         self.validate(config)
         names = self.resource_names(config)
+        if config.network is not None:
+            verify_attachments(self.kubectl, config.namespace, config.network)
         for resource in names["collision_targets"].split(","):
             if self.kubectl.resource_exists(resource, config.namespace):
                 raise ValueError(
@@ -106,17 +126,31 @@ class NixlRunner(BenchmarkRunner):
                     "jsonpath={.status.phase}=Running",
                     config.timeout_seconds,
                 )
-            address = self.kubectl.output(
-                [
-                    "get",
-                    "pod",
-                    names["initiator_pod"],
-                    "-n",
+            addresses: dict[str, str] = {}
+            if config.network is not None:
+                # The ASIO rendezvous must happen on the secondary network too.
+                addresses = discover_addresses(
+                    self.kubectl,
                     config.namespace,
-                    "-o",
-                    "jsonpath={.status.podIP}",
-                ]
-            )
+                    config.network,
+                    {
+                        "initiator": names["initiator_pod"],
+                        "target": names["target_pod"],
+                    },
+                )
+                address = addresses["initiator_address"]
+            else:
+                address = self.kubectl.output(
+                    [
+                        "get",
+                        "pod",
+                        names["initiator_pod"],
+                        "-n",
+                        config.namespace,
+                        "-o",
+                        "jsonpath={.status.podIP}",
+                    ]
+                )
             if not address:
                 raise ValueError("unable to determine the NIXL initiator pod IP")
         except BaseException:
@@ -127,6 +161,7 @@ class NixlRunner(BenchmarkRunner):
                 "initiator_pod": names["initiator_pod"],
                 "target_pod": names["target_pod"],
                 "initiator_ip": address,
+                **addresses,
             },
             manifest_path=manifest,
         )
@@ -179,6 +214,7 @@ class NixlRunner(BenchmarkRunner):
             "namespace": config.namespace,
             "image": config.image,
             "parameters": parameters,
+            "network": self._network_metadata(config, resources),
             "resource_overrides": _resource_overrides(config),
             "nixl_args": args,
             "initiator_file": initiator_log.name,
@@ -244,6 +280,22 @@ class NixlRunner(BenchmarkRunner):
         if resources is None or config.keep_resources or resources.manifest_path is None:
             return
         self.kubectl.delete_manifest(config.namespace, resources.manifest_path)
+
+    def _network_metadata(
+        self,
+        config: BenchmarkConfig,
+        resources: BackendResources,
+    ) -> dict[str, JsonValue] | None:
+        if config.network is None:
+            return None
+        return {
+            role: {
+                "attachment": config.network.for_role(role).attachment,
+                "interface": config.network.for_role(role).interface,
+                "address": resources.names.get(f"{role}_address"),
+            }
+            for role in ("initiator", "target")
+        }
 
     def resource_names(self, config: BenchmarkConfig) -> dict[str, str]:
         initiator = f"nixlbench-server-{config.test_id}"

@@ -16,6 +16,19 @@ nodes:
   initiator: <initiator-node>   # needs a free nvidia.com/gpu
   target: <target-node>         # must differ from the initiator
 
+# Optional: run over Multus secondary NICs instead of the pod's eth0.
+# Each side has its own attachment because the nodes usually use different NICs.
+# See "Secondary network (Multus)" in the README. Omit the whole section to use eth0.
+# network:
+#   initiator:
+#     attachment: <network-attachment-definition>   # or <namespace>/<name>
+#     interface: net1                               # optional: interface name inside the pod
+#     ip: <ip>/<prefix>                             # optional: request a static IP (IPAM must honor it)
+#   target:
+#     attachment: <network-attachment-definition>
+#     interface: net1
+#     ip: <ip>/<prefix>
+
 dimensions:
   threads: "1:8"
   block_size: "1K:8M"           # powers of two; K/M/G suffixes (base 1024)

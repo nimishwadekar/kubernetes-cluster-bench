@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 from src.backends.nixl.runner import NixlRunner, _minimum_total_buffer_size
 from src.benchmark.contracts import BackendResources, BenchmarkConfig
+from src.benchmark.network import NetworkAttachment, SecondaryNetwork
 
 
 class FakeProcess:
@@ -115,6 +116,70 @@ class NixlRunnerTests(unittest.TestCase):
             )
             self.assertIn("policy=Never", destination.read_text(encoding="utf-8"))
 
+    def network(self) -> SecondaryNetwork:
+        return SecondaryNetwork(
+            initiator=NetworkAttachment("cx7-a", "net1"),
+            target=NetworkAttachment("cx7-b", "net2"),
+        )
+
+    def test_render_manifest_attaches_network_and_pins_ucx_devices(self) -> None:
+        import yaml
+
+        config = replace(self.config(), network=self.network())
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "manifest.yaml"
+            NixlRunner().render_manifest(config, destination)
+            docs = list(yaml.safe_load_all(destination.read_text(encoding="utf-8")))
+        pods = {doc["metadata"]["name"]: doc for doc in docs}
+        initiator = pods["nixlbench-server-test-1"]
+        target = pods["nixlbench-client-test-1"]
+        self.assertIn("cx7-a", initiator["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"])
+        self.assertIn("cx7-b", target["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"])
+
+        def env(pod):
+            return {e["name"]: e["value"] for e in pod["spec"]["containers"][0]["env"]}
+
+        self.assertEqual(env(initiator)["UCX_NET_DEVICES"], "net1")
+        self.assertEqual(env(target)["UCX_NET_DEVICES"], "net2")
+        self.assertEqual(env(initiator)["UCX_TLS"], "tcp,self,cuda_copy")  # untouched
+
+    def test_no_network_leaves_ucx_devices_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "manifest.yaml"
+            NixlRunner().render_manifest(self.config(), destination)
+            text = destination.read_text(encoding="utf-8")
+        self.assertNotIn("UCX_NET_DEVICES", text)
+        self.assertNotIn("k8s.v1.cni.cncf.io", text)
+
+    def test_deploy_uses_secondary_address_for_the_rendezvous(self) -> None:
+        kubectl = Mock()
+        kubectl.resource_exists.side_effect = lambda resource, namespace: (
+            resource.startswith("network-attachment-definitions")
+        )
+        def output(args):
+            if args[2] == "nixlbench-server-test-1":
+                return '[{"interface": "net1", "ips": ["10.77.0.35"]}]'
+            return '[{"interface": "net2", "ips": ["10.77.0.36"]}]'
+        kubectl.output.side_effect = output
+        resources = NixlRunner(kubectl=kubectl).deploy(
+            replace(self.config(), network=self.network()), Path("manifest.yaml")
+        )
+        self.assertEqual(resources.names["initiator_ip"], "10.77.0.35")
+        self.assertEqual(resources.names["initiator_address"], "10.77.0.35")
+        self.assertEqual(resources.names["target_address"], "10.77.0.36")
+        self.assertFalse(any(
+            "podIP" in str(call) for call in kubectl.output.call_args_list
+        ))
+
+    def test_deploy_rejects_missing_attachment_before_creating_pods(self) -> None:
+        kubectl = Mock()
+        kubectl.resource_exists.return_value = False
+        with self.assertRaisesRegex(ValueError, "not found"):
+            NixlRunner(kubectl=kubectl).deploy(
+                replace(self.config(), network=self.network()), Path("manifest.yaml")
+            )
+        kubectl.apply_manifest.assert_not_called()
+
     def test_resources_override_cpu_and_memory_but_keep_gpu(self) -> None:
         import yaml
         from src.benchmark.resources import PodResources
@@ -132,7 +197,6 @@ class NixlRunnerTests(unittest.TestCase):
             self.assertEqual(resources["requests"]["cpu"], "4")
             self.assertEqual(resources["requests"]["memory"], "8Gi")  # template default kept
             self.assertEqual(resources["limits"], {"cpu": "4", "memory": "16Gi", "nvidia.com/gpu": "1"})
-
 
     def test_render_manifest_rejects_leftover_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

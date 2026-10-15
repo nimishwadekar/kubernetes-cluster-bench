@@ -173,7 +173,7 @@ target memory: DRAM
 ASIO port: 12345
 ```
 
-The runner derives the ASIO address from the initiator pod IP. It maps:
+The runner derives the ASIO address from the initiator pod IP (or from its secondary interface when a `network` section is set). It maps:
 
 ```text
 threads      → --num_threads
@@ -192,6 +192,33 @@ max_block_size × max_batch_size × num_threads
 assuming one initiator and one target device, then passes the calculated value to NIXLBench. NIXLBench may adjust iteration counts to distribute work evenly across threads.
 
 For NIXL, `runs` is passed to NIXLBench as `--num_iter`; the framework executes once per thread dimension rather than repeating the whole NIXL process.
+
+### Secondary network (Multus)
+
+By default the iperf3 client connects to the server pod's Kubernetes Service, and NIXL uses the initiator pod's `eth0` IP, so traffic uses the pods' primary interface (`eth0`). To benchmark another NIC, attach it with [Multus](https://github.com/k8snetworkplumbingwg/multus-cni) and add a top-level `network` section. The initiator and target are configured separately:
+
+```yaml
+network:
+  initiator:
+    attachment: cx7-rack35     # NetworkAttachmentDefinition name, or <namespace>/<name>
+    interface: net1            # optional, default net1
+    ip: 10.10.0.1/24           # optional
+  target:
+    attachment: cx7-rack36
+    interface: net1
+    ip: 10.10.0.2/24
+```
+
+The `NetworkAttachmentDefinition`s must already exist in the cluster (the framework does not create them). Before creating any pods it checks for each one, and fails with an explicit error if the cluster has no `NetworkAttachmentDefinition` resource (Multus is not installed) or if a named attachment does not exist. If `attachment` has no namespace, Multus looks for it in `execution.namespace`. Each pod is annotated with `k8s.v1.cni.cncf.io/networks` for its own side, and the framework then:
+
+1. Reads each pod's `k8s.v1.cni.cncf.io/network-status` annotation to find the IP on that side's `interface`. If the pod has no such annotation or interface, the run fails with an error naming what was found (typically Multus is missing or the attachment is wrong).
+2. Uses those addresses instead of `eth0`:
+   - **iperf3** runs the client as `iperf3 -c <target address> -B <initiator address>`, so the connection starts and ends on the secondary interfaces instead of using the Service.
+   - **NIXL** uses the initiator's secondary address as the ASIO rendezvous address (`--asio_address`), and sets `UCX_NET_DEVICES=<interface>` in each pod so UCX carries the data over that interface and not `eth0`.
+
+`ip` is optional. Without it the address comes from the attachment's IPAM. With it, the address is requested through Multus (`ips` in the annotation, which needs a static-capable IPAM) and the run fails before any traffic if the pod ends up with a different address. It must include a prefix length. The resolved addresses are recorded under `network` in each `*-command.json`.
+
+Backends that do not support `network` reject the section instead of ignoring it. NIXL runs over TCP here (`UCX_TLS` is unchanged), so this selects the NIC, not RDMA.
 
 ### Failure handling
 
@@ -227,6 +254,7 @@ The loader rejects unknown fields. Common fields are:
 
 ```text
 backend, name, test_id
+network.initiator.{attachment,interface,ip}, network.target.{attachment,interface,ip} (iperf3 and nixl)
 nodes.initiator, nodes.target
 dimensions.threads
 execution.namespace, execution.image, execution.log_directory

@@ -33,6 +33,10 @@ def print_configuration(
     print(f"  {'Logs directory:':<20} {config.log_directory}")
     print(f"  {'Image:':<20} {config.image}")
     print(f"  {'Backend:':<20} {config.backend}")
+    if config.network is not None:
+        for label, side in (("Client", config.network.initiator), ("Server", config.network.target)):
+            requested = f", ip {side.ip}" if side.ip else ""
+            print(f"  {label + ' network:':<20} {side.attachment} ({side.interface}{requested})")
     for kind, values in (
         ("requests", config.resources.requests),
         ("limits", config.resources.limits),

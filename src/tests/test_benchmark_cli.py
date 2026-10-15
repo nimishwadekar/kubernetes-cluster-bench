@@ -176,6 +176,64 @@ execution:
         with self.assertRaisesRegex(ValueError, "image_pull_policy"):
             load("  image_pull_policy: Sometimes\n")
 
+    def test_network_profile_section(self) -> None:
+        template = """\
+backend: %s
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s
+%s"""
+        backend_sections = {
+            "iperf3": "",
+            "nixl": '  nixl: {warmup_runs: 1}\ndimensions: {block_size: "4M", batch_size: 1}',
+        }
+        def load(backend: str, extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(
+                    template % (backend, backend_sections[backend], extra),
+                    encoding="utf-8",
+                )
+                return parse_config(["--profile", str(path)])
+
+        self.assertIsNone(load("iperf3", "").network)
+        full = (
+            "network:\n"
+            "  initiator: {attachment: cx7-a}\n"
+            "  target: {attachment: ns/cx7-b, interface: net2, ip: 10.0.0.2/24}\n"
+        )
+        network = load("iperf3", full).network
+        self.assertEqual(network.initiator.attachment, "cx7-a")
+        self.assertEqual(network.initiator.interface, "net1")
+        self.assertIsNone(network.initiator.ip)
+        self.assertEqual(network.target.attachment, "ns/cx7-b")
+        self.assertEqual(network.target.interface, "net2")
+        self.assertEqual(network.target.ip, "10.0.0.2/24")
+        with self.assertRaisesRegex(ValueError, "network.target' is required"):
+            load("iperf3", "network:\n  initiator: {attachment: cx7-a}\n")
+        with self.assertRaisesRegex(ValueError, "initiator.attachment"):
+            load("iperf3", "network:\n  initiator: {interface: net1}\n  target: {attachment: b}\n")
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            load("iperf3", "network:\n  attachment: cx7\n  initiator: {attachment: a}\n  target: {attachment: b}\n")
+        with self.assertRaisesRegex(ValueError, "network.target: ip must include"):
+            load("iperf3", "network:\n  initiator: {attachment: a}\n  target: {attachment: b, ip: 10.0.0.2}\n")
+        self.assertEqual(load("nixl", full).network.target.interface, "net2")
+
+        unsupported = BackendRegistry((BackendPlugin(name="fake"),))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.yaml"
+            path.write_text(
+                "backend: fake\nnodes: {initiator: a, target: b}\n"
+                "execution: {image: x/y:z, namespace: bench}\n" + full,
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "does not support"):
+                parse_config(["--profile", str(path)], unsupported)
+
     def test_resources_profile_section(self) -> None:
         template = """\
 backend: iperf3

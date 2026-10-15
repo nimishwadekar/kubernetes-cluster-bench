@@ -12,6 +12,7 @@ from ..common.console import Colors, terminal_colors
 from ..common.types import JsonValue
 from .kubernetes import KubectlClient
 from .artifacts import BenchmarkExecution
+from .network import DEFAULT_INTERFACE, NetworkAttachment, SecondaryNetwork
 from .contracts import (
     DEFAULT_IMAGE_PULL_POLICY,
     DEFAULT_MAX_CONSECUTIVE_FAILURES,
@@ -24,7 +25,11 @@ from .profile import load_profile, profile_section
 from .resources import PodResources
 
 
-COMMON_PROFILE_FIELDS = frozenset({"backend", "name", "test_id", "nodes", "dimensions", "execution"})
+COMMON_PROFILE_FIELDS = frozenset(
+    {"backend", "name", "test_id", "nodes", "dimensions", "execution", "network"}
+)
+NETWORK_SIDES = ("initiator", "target")
+NETWORK_SIDE_FIELDS = frozenset({"attachment", "interface", "ip"})
 COMMON_NODE_FIELDS = frozenset({"initiator", "target"})
 COMMON_EXECUTION_FIELDS = frozenset(
     {
@@ -73,6 +78,7 @@ def parse_config(
         raise ValueError("profile field 'backend' is required")
     selected_registry = registry or default_registry()
     plugin = selected_registry.get(backend)
+    network = _parse_network(profile, backend, plugin.supports_network)
     backend_parameters = profile_section(execution, backend)
     _reject_unknown_fields(
         execution,
@@ -161,6 +167,7 @@ def parse_config(
         keep_resources=keep_resources,
         max_consecutive_failures=max_consecutive_failures,
         image_pull_policy=image_pull_policy,
+        network=network,
         resources=_parse_resources(execution),
         parameters=parameters,
     )
@@ -227,6 +234,40 @@ def _parse_resources(execution: Mapping[str, object]) -> PodResources:
                 raise ValueError(f"{location}.{name} must be a string or number")
             parsed[kind][name] = str(value)
     return PodResources(requests=parsed["requests"], limits=parsed["limits"])
+
+
+def _parse_network(
+    profile: Mapping[str, object],
+    backend: str,
+    supported: bool,
+) -> SecondaryNetwork | None:
+    if "network" not in profile or profile["network"] is None:
+        return None
+    if not supported:
+        raise ValueError(
+            f"backend {backend!r} does not support the 'network' section yet"
+        )
+    section = profile_section(profile, "network")
+    _reject_unknown_fields(section, frozenset(NETWORK_SIDES), "profile.network")
+    sides: dict[str, NetworkAttachment] = {}
+    for side in NETWORK_SIDES:
+        if side not in section:
+            raise ValueError(f"profile section 'network.{side}' is required")
+        fields = profile_section(section, side)
+        location = f"profile.network.{side}"
+        _reject_unknown_fields(fields, NETWORK_SIDE_FIELDS, location)
+        attachment = _profile_string(fields, "attachment")
+        if attachment is None:
+            raise ValueError(f"profile field '{location}.attachment' is required")
+        try:
+            sides[side] = NetworkAttachment(
+                attachment=attachment,
+                interface=_profile_string(fields, "interface") or DEFAULT_INTERFACE,
+                ip=_profile_string(fields, "ip"),
+            )
+        except ValueError as error:
+            raise ValueError(f"{location}: {error}") from error
+    return SecondaryNetwork(**sides)
 
 
 def _reject_unknown_fields(

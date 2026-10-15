@@ -23,6 +23,7 @@ class BackendPlugin:
     profile_dimensions: frozenset[str] = frozenset()
     graph_dimensions: frozenset[str] = frozenset()
     framework_repeats: bool = True
+    supports_network: bool = False
 
     def __post_init__(self) -> None:
         if not self.name:

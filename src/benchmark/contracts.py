@@ -6,6 +6,7 @@ import re
 from typing import Callable, Mapping, Protocol
 
 from ..common.console import Colors
+from .network import SecondaryNetwork
 from .resources import PodResources
 from ..common.types import JsonValue
 
@@ -41,6 +42,7 @@ class BenchmarkConfig:
     keep_resources: bool = False
     max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES
     image_pull_policy: str = DEFAULT_IMAGE_PULL_POLICY
+    network: SecondaryNetwork | None = None
     resources: PodResources = field(default_factory=PodResources)
     parameters: Mapping[str, JsonValue] = field(default_factory=_empty_json_mapping)
 

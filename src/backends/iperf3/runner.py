@@ -17,6 +17,11 @@ from ...benchmark.contracts import (
     RunContext,
 )
 from ...benchmark.kubernetes import KubectlClient, wait_for_tcp_listener
+from ...benchmark.network import (
+    apply_secondary_network,
+    discover_addresses,
+    verify_attachments,
+)
 from ...benchmark.process import terminate_process
 from ...benchmark.resources import apply_resources
 from ...common.console import Colors
@@ -86,6 +91,13 @@ class Iperf3Runner(BenchmarkRunner):
                 "iperf3 manifest still contains placeholder(s): "
                 + ", ".join(remaining)
             )
+        if config.network is not None:
+            names = self.resource_names(config)
+            manifest = apply_secondary_network(
+                manifest,
+                config.network,
+                {names["client_pod"]: "initiator", names["server_pod"]: "target"},
+            )
         if not config.resources.is_empty:
             manifest = apply_resources(manifest, config.resources)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +106,8 @@ class Iperf3Runner(BenchmarkRunner):
     def deploy(self, config: BenchmarkConfig, manifest: Path) -> BackendResources:
         self.validate(config)
         names = self.resource_names(config)
+        if config.network is not None:
+            verify_attachments(self.kubectl, config.namespace, config.network)
         for resource in names["collision_targets"]:
             if self.kubectl.resource_exists(resource, config.namespace):
                 raise ValueError(
@@ -108,6 +122,14 @@ class Iperf3Runner(BenchmarkRunner):
                     "jsonpath={.status.phase}=Running",
                     config.timeout_seconds,
                 )
+            addresses: dict[str, str] = {}
+            if config.network is not None:
+                addresses = discover_addresses(
+                    self.kubectl,
+                    config.namespace,
+                    config.network,
+                    {"initiator": names["client_pod"], "target": names["server_pod"]},
+                )
         except BaseException:
             self.kubectl.delete_manifest(config.namespace, manifest)
             raise
@@ -116,6 +138,7 @@ class Iperf3Runner(BenchmarkRunner):
                 "server_service": names["server_service"],
                 "server_pod": names["server_pod"],
                 "client_pod": names["client_pod"],
+                **addresses,
             },
             manifest_path=manifest,
         )
@@ -148,6 +171,7 @@ class Iperf3Runner(BenchmarkRunner):
             "namespace": config.namespace,
             "image": config.image,
             "parameters": dict(config.parameters),
+            "network": self._network_metadata(config, resources),
             "resource_overrides": _resource_overrides(config),
             "client_command": client_command,
             "server_command": server_command,
@@ -250,12 +274,14 @@ class Iperf3Runner(BenchmarkRunner):
             "--",
             "iperf3",
             "-c",
-            resources.names["server_service"],
+            resources.names.get("target_address", resources.names["server_service"]),
             "-J",
             "-P",
             str(thread_count),
             "--get-server-output",
         ]
+        if "initiator_address" in resources.names:
+            command.extend(["-B", resources.names["initiator_address"]])
         duration = int(config.parameters.get("duration_seconds", 10))
         warmup = int(config.parameters.get("warmup_seconds", 5))
         command.extend(["-t", str(duration + warmup), "-O", str(warmup)])
@@ -277,6 +303,22 @@ class Iperf3Runner(BenchmarkRunner):
             "-s",
             "-J",
         ]
+
+    def _network_metadata(
+        self,
+        config: BenchmarkConfig,
+        resources: BackendResources,
+    ) -> dict[str, JsonValue] | None:
+        if config.network is None:
+            return None
+        return {
+            role: {
+                "attachment": config.network.for_role(role).attachment,
+                "interface": config.network.for_role(role).interface,
+                "address": resources.names.get(f"{role}_address"),
+            }
+            for role in ("initiator", "target")
+        }
 
     def resource_names(self, config: BenchmarkConfig) -> dict[str, object]:
         server_name = f"network-benchmark-server-{config.test_id}"
