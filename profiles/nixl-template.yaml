@@ -24,6 +24,7 @@ dimensions:
 execution:
   namespace: <namespace>        # optional: defaults to the current kubectl context namespace
   image: <registry>/nixl-benchmark:<tag>   # built from images/Dockerfile.nixl
+  image_pull_policy: Always     # Always | IfNotPresent | Never (use Never/IfNotPresent for locally loaded images)
   log_directory: logs
   runs: 100                     # passed to NIXLBench as --num_iter
   timeout_seconds: 120          # pod readiness / initiator startup

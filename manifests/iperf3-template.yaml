@@ -32,7 +32,7 @@ spec:
   containers:
     - name: benchmark-server
       image: __IMAGE__
-      imagePullPolicy: Always
+      imagePullPolicy: __IMAGE_PULL_POLICY__
       command: ["sleep"]
       args: ["infinity"]
       ports:
@@ -61,7 +61,7 @@ spec:
   containers:
     - name: benchmark-client
       image: __IMAGE__
-      imagePullPolicy: Always
+      imagePullPolicy: __IMAGE_PULL_POLICY__
       command: ["sleep"]
       args: ["infinity"]
       resources:

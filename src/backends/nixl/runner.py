@@ -67,6 +67,7 @@ class NixlRunner(BenchmarkRunner):
             "__CLIENT_NODE__": config.target_node,
             "__SERVER_NODE__": config.initiator_node,
             "__IMAGE__": config.image,
+            "__IMAGE_PULL_POLICY__": config.image_pull_policy,
         }
         missing = [marker for marker in replacements if marker not in manifest]
         if missing:

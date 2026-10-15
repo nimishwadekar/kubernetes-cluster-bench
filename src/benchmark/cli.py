@@ -12,7 +12,12 @@ from ..common.console import Colors, terminal_colors
 from ..common.types import JsonValue
 from .kubernetes import KubectlClient
 from .artifacts import BenchmarkExecution
-from .contracts import DEFAULT_MAX_CONSECUTIVE_FAILURES, BenchmarkConfig
+from .contracts import (
+    DEFAULT_IMAGE_PULL_POLICY,
+    DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    IMAGE_PULL_POLICIES,
+    BenchmarkConfig,
+)
 from .overwrite import OverwriteDeclined, confirm_overwrite
 from .orchestrator import run_benchmark
 from .profile import load_profile, profile_section
@@ -29,6 +34,7 @@ COMMON_EXECUTION_FIELDS = frozenset(
         "timeout_seconds",
         "keep_resources",
         "max_consecutive_failures",
+        "image_pull_policy",
     }
 )
 
@@ -124,6 +130,12 @@ def parse_config(
     timeout = _profile_positive_int(
         execution.get("timeout_seconds"), "timeout_seconds", default=120
     )
+    image_pull_policy = execution.get("image_pull_policy", DEFAULT_IMAGE_PULL_POLICY)
+    if image_pull_policy not in IMAGE_PULL_POLICIES:
+        raise ValueError(
+            "profile field 'image_pull_policy' must be one of: "
+            + ", ".join(IMAGE_PULL_POLICIES)
+        )
     max_consecutive_failures = _profile_nonnegative_int(
         execution.get("max_consecutive_failures"),
         "max_consecutive_failures",
@@ -146,6 +158,7 @@ def parse_config(
         timeout_seconds=timeout,
         keep_resources=keep_resources,
         max_consecutive_failures=max_consecutive_failures,
+        image_pull_policy=image_pull_policy,
         parameters=parameters,
     )
 

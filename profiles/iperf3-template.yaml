@@ -22,6 +22,7 @@ dimensions:
 execution:
   namespace: <namespace>        # optional: defaults to the current kubectl context namespace
   image: <registry>/kubernetes-cluster-bench:iperf3   # built from images/Dockerfile.iperf3
+  image_pull_policy: Always     # Always | IfNotPresent | Never (use Never/IfNotPresent for locally loaded images)
   log_directory: logs
   runs: 3                       # repeated runs per thread count
   timeout_seconds: 120          # pod readiness / server startup

@@ -155,6 +155,27 @@ execution:
             self.assertEqual(config.backend, backend)
             self.assertNotEqual(config.initiator_node, config.target_node)
 
+    def test_image_pull_policy_profile_field(self) -> None:
+        template = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        self.assertEqual(load("").image_pull_policy, "Always")
+        self.assertEqual(load("  image_pull_policy: Never\n").image_pull_policy, "Never")
+        with self.assertRaisesRegex(ValueError, "image_pull_policy"):
+            load("  image_pull_policy: Sometimes\n")
+
     def test_missing_image_is_rejected(self) -> None:
         profile = """\
 backend: iperf3

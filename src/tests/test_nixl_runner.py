@@ -101,11 +101,25 @@ class NixlRunnerTests(unittest.TestCase):
                 runner.execute(config, resources, Path(directory) / "raw" / "t1")
         self.assertTrue(all(process.terminated for process in processes.values()))
 
+    def test_render_manifest_applies_image_pull_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.yaml"
+            template.write_text(
+                "__TEST_ID__ __CLIENT_NODE__ __SERVER_NODE__ __IMAGE__ "
+                "policy=__IMAGE_PULL_POLICY__",
+                encoding="utf-8",
+            )
+            destination = Path(directory) / "out.yaml"
+            NixlRunner(manifest_template=template).render_manifest(
+                replace(self.config(), image_pull_policy="Never"), destination
+            )
+            self.assertIn("policy=Never", destination.read_text(encoding="utf-8"))
+
     def test_render_manifest_rejects_leftover_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             template = Path(directory) / "template.yaml"
             template.write_text(
-                "__TEST_ID__ __CLIENT_NODE__ __SERVER_NODE__ __IMAGE__", encoding="utf-8"
+                "__TEST_ID__ __CLIENT_NODE__ __SERVER_NODE__ __IMAGE__ __IMAGE_PULL_POLICY__", encoding="utf-8"
             )
             runner = NixlRunner(manifest_template=template)
             config = replace(self.config(), image="registry/__TEST_ID__:tag")

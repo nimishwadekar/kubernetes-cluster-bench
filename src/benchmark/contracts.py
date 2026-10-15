@@ -10,6 +10,8 @@ from ..common.types import JsonValue
 
 
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 5
+IMAGE_PULL_POLICIES = ("Always", "IfNotPresent", "Never")
+DEFAULT_IMAGE_PULL_POLICY = "Always"
 
 
 def _empty_json_mapping() -> dict[str, JsonValue]:
@@ -37,6 +39,7 @@ class BenchmarkConfig:
     timeout_seconds: int = 120
     keep_resources: bool = False
     max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES
+    image_pull_policy: str = DEFAULT_IMAGE_PULL_POLICY
     parameters: Mapping[str, JsonValue] = field(default_factory=_empty_json_mapping)
 
     def __post_init__(self) -> None:
@@ -62,6 +65,10 @@ class BenchmarkConfig:
             raise ValueError("runs must be positive")
         if self.timeout_seconds < 1:
             raise ValueError("timeout_seconds must be positive")
+        if self.image_pull_policy not in IMAGE_PULL_POLICIES:
+            raise ValueError(
+                "image_pull_policy must be one of: " + ", ".join(IMAGE_PULL_POLICIES)
+            )
         if self.max_consecutive_failures < 0:
             raise ValueError("max_consecutive_failures must not be negative")
 

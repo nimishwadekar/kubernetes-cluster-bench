@@ -197,6 +197,10 @@ For NIXL, `runs` is passed to NIXLBench as `--num_iter`; the framework executes 
 
 A failed run is recorded and the benchmark continues with the next run. `execution.max_consecutive_failures` (default `5`, `0` disables) aborts the benchmark after that many failed runs in a row, so a broken cluster does not burn hours on runs that cannot succeed. Resources are still cleaned up, and remaining runs are reported as "not run". Any success resets the counter. At the end a summary line (`N/M runs succeeded, K failed, J not run`) is printed and the exit status is 1 if any run failed or the benchmark aborted.
 
+### Image pull policy
+
+`execution.image_pull_policy` sets `imagePullPolicy` on every benchmark pod: `Always` (default), `IfNotPresent`, or `Never`. Use `IfNotPresent` or `Never` for images loaded directly onto the nodes (e.g. a local build that is not in a registry), where `Always` would fail the pull.
+
 ### Profile validation
 
 The loader rejects unknown fields. Common fields are:
@@ -207,7 +211,7 @@ nodes.initiator, nodes.target
 dimensions.threads
 execution.namespace, execution.image, execution.log_directory
 execution.runs, execution.timeout_seconds, execution.keep_resources
-execution.max_consecutive_failures
+execution.max_consecutive_failures, execution.image_pull_policy
 ```
 
 Backend-exposed fields are:
