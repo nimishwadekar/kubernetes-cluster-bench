@@ -64,6 +64,12 @@ class NixlRunner(BenchmarkRunner):
             )
         for marker, value in replacements.items():
             manifest = manifest.replace(marker, value)
+        remaining = [marker for marker in replacements if marker in manifest]
+        if remaining:
+            raise ValueError(
+                "NIXL manifest still contains placeholder(s): "
+                + ", ".join(remaining)
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(manifest, encoding="utf-8")
 

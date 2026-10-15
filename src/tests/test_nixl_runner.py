@@ -61,6 +61,17 @@ class NixlRunnerTests(unittest.TestCase):
             runner.cleanup(self.config(), BackendResources(manifest_path=Path("manifest.yaml")))
         runner.kubectl.delete_manifest.assert_called_once()
 
+    def test_render_manifest_rejects_leftover_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "template.yaml"
+            template.write_text(
+                "__TEST_ID__ __CLIENT_NODE__ __SERVER_NODE__ __IMAGE__", encoding="utf-8"
+            )
+            runner = NixlRunner(manifest_template=template)
+            config = replace(self.config(), image="registry/__TEST_ID__:tag")
+            with self.assertRaisesRegex(ValueError, "still contains"):
+                runner.render_manifest(config, Path(directory) / "out.yaml")
+
 
 if __name__ == "__main__":
     unittest.main()
