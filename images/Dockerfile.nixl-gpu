@@ -1,0 +1,177 @@
+# ============================================================================
+# GPU NIXLBench image (CUDA 13, no vLLM)
+# ============================================================================
+# NIXL and UCX come from the official `nixl-cu13` PyPI wheel, which bundles
+# NIXL, UCX 1.22.0 and the backend plugins. The wheel has no C++ headers, so
+# the matching NIXL v1.4.1 sources provide the headers and the nixlbench
+# sources, and only nixlbench is compiled. The runtime image is a minimal CUDA
+# base image plus those libraries, instead of the full vLLM image.
+#
+# Stages (each is independent, so BuildKit caches and parallelizes them):
+#   toolchain -> nixl-wheel -> nixl-link -> nixlbench -> dist -> runtime image
+#   nixl-src (git clone) feeds nixl-link and nixlbench.
+#
+# The node needs the NVIDIA driver and container runtime (nvidia.com/gpu),
+# which supply libcuda at run time. For nodes without GPUs use
+# images/Dockerfile.nixl-cpu with `execution.nixl.gpu: false`.
+#
+# Build for the GPU nodes' architecture (nothing is copied from the context):
+#   docker buildx build --platform linux/amd64 \
+#     -f images/Dockerfile.nixl-gpu \
+#     -t <registry>/nixl-benchmark:gpu \
+#     --push images/
+
+ARG CUDA_VERSION=13.0.2
+ARG UBUNTU_VERSION=24.04
+ARG NIXL_VERSION=1.4.1
+
+# ---------------------------------------------------------------------------
+# CUDA toolchain (headers and stubs) and build dependencies.
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS toolchain
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libasio-dev \
+        libgflags-dev \
+        libhwloc-dev \
+        libibverbs-dev \
+        libnuma-dev \
+        librdmacm-dev \
+        libtomlplusplus-dev \
+        ninja-build \
+        patch \
+        pkg-config \
+        python3 \
+        python3-pip \
+        python3-venv && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/build-venv && \
+    /opt/build-venv/bin/pip install --no-cache-dir meson
+ENV PATH=/opt/build-venv/bin:${PATH}
+
+# ---------------------------------------------------------------------------
+# The nixl-cu13 wheel: NIXL, UCX and the plugins as shared libraries.
+# ---------------------------------------------------------------------------
+FROM toolchain AS nixl-wheel
+
+ARG NIXL_VERSION
+
+RUN python3 -m venv /opt/nixl-venv && \
+    /opt/nixl-venv/bin/pip install --no-cache-dir "nixl-cu13==${NIXL_VERSION}"
+
+# ---------------------------------------------------------------------------
+# NIXL sources: headers and the nixlbench sources.
+# ---------------------------------------------------------------------------
+FROM ubuntu:${UBUNTU_VERSION} AS nixl-src
+
+ARG NIXL_VERSION
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "v${NIXL_VERSION}" https://github.com/ai-dynamo/nixl.git /src/nixl
+
+# ---------------------------------------------------------------------------
+# Link prefix: wheel libraries plus source headers, in the layout nixlbench's
+# build expects (<prefix>/include and <prefix>/lib64).
+# ---------------------------------------------------------------------------
+FROM toolchain AS nixl-link
+
+ARG WHEEL_ROOT=/opt/nixl-venv/lib/python3.12/site-packages
+ARG NIXL_LINK_PREFIX=/opt/nixl-for-bench
+
+COPY --from=nixl-wheel ${WHEEL_ROOT}/.nixl_cu13.mesonpy.libs ${WHEEL_ROOT}/.nixl_cu13.mesonpy.libs
+COPY --from=nixl-wheel ${WHEEL_ROOT}/nixl_cu13.libs ${WHEEL_ROOT}/nixl_cu13.libs
+COPY --from=nixl-src /src/nixl/src/api/cpp ${NIXL_LINK_PREFIX}/include
+COPY --from=nixl-src /src/nixl/src/utils ${NIXL_LINK_PREFIX}/include/utils
+
+RUN set -eux; \
+    WHEEL_LIB_DIR="${WHEEL_ROOT}/.nixl_cu13.mesonpy.libs"; \
+    WHEEL_EXTRA_LIB_DIR="${WHEEL_ROOT}/nixl_cu13.libs"; \
+    test -f "${WHEEL_LIB_DIR}/libnixl.so"; \
+    test -d "${WHEEL_LIB_DIR}/plugins"; \
+    mkdir -p "${NIXL_LINK_PREFIX}/lib64"; \
+    for lib in "${WHEEL_LIB_DIR}"/*.so* "${WHEEL_EXTRA_LIB_DIR}"/*.so*; do \
+        [ -e "${lib}" ] || continue; \
+        ln -sfn "${lib}" "${NIXL_LINK_PREFIX}/lib64/$(basename "${lib}")"; \
+    done; \
+    test -e "${NIXL_LINK_PREFIX}/lib64/libnixl.so"
+
+# ---------------------------------------------------------------------------
+# nixlbench, linked against the wheel libraries and CUDA.
+# ---------------------------------------------------------------------------
+FROM nixl-link AS nixlbench
+
+ARG NIXL_LINK_PREFIX=/opt/nixl-for-bench
+
+COPY --from=nixl-src /src/nixl/benchmark/nixlbench /src/nixlbench
+
+RUN set -eux; \
+    meson setup /tmp/nixlbench-build /src/nixlbench \
+        --prefix=/opt/nixlbench \
+        --buildtype=release \
+        -Dlibdir=lib64 \
+        -Dnixl_path="${NIXL_LINK_PREFIX}" \
+        -Dcudapath_inc=/usr/local/cuda/include \
+        -Dcudapath_lib=/usr/local/cuda/lib64 \
+        -Dcudapath_stub=/usr/local/cuda/lib64/stubs; \
+    ninja -C /tmp/nixlbench-build; \
+    ninja -C /tmp/nixlbench-build install
+
+# ---------------------------------------------------------------------------
+# Package: gather what the runtime needs. The wheel libraries are copied
+# unmodified (they are patched with relative rpaths, so they are not stripped
+# and their sibling-directory layout is kept).
+# ---------------------------------------------------------------------------
+FROM toolchain AS dist
+
+ARG WHEEL_ROOT=/opt/nixl-venv/lib/python3.12/site-packages
+
+COPY --from=nixl-wheel ${WHEEL_ROOT}/.nixl_cu13.mesonpy.libs /dist/nixl/.nixl_cu13.mesonpy.libs
+COPY --from=nixl-wheel ${WHEEL_ROOT}/nixl_cu13.libs /dist/nixl/nixl_cu13.libs
+COPY --from=nixlbench /opt/nixlbench /dist/nixlbench
+
+RUN strip --strip-unneeded /dist/nixlbench/bin/nixlbench
+
+# ---------------------------------------------------------------------------
+# Runtime image: minimal CUDA base (libcudart). libcuda comes from the host
+# driver through the NVIDIA container runtime.
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ibverbs-providers \
+        iproute2 \
+        libgflags2.2 \
+        libgomp1 \
+        libhwloc15 \
+        libibverbs1 \
+        libnuma1 \
+        librdmacm1t64 \
+        libtomlplusplus3t64 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=dist /dist/nixl /opt/nixl
+COPY --from=dist /dist/nixlbench /opt/nixlbench
+
+ENV PATH=/opt/nixlbench/bin:${PATH}
+ENV LD_LIBRARY_PATH=/opt/nixl/.nixl_cu13.mesonpy.libs:/opt/nixl/nixl_cu13.libs:/opt/nixl/.nixl_cu13.mesonpy.libs/plugins
+ENV NIXL_PLUGIN_DIR=/opt/nixl/.nixl_cu13.mesonpy.libs/plugins
+
+# Not appropriate to inherit a service entrypoint in a benchmark image.
+ENTRYPOINT []
+CMD ["bash"]
