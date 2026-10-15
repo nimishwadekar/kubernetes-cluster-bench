@@ -6,6 +6,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 from ...benchmark.artifacts import write_json
 from ...benchmark.contracts import (
     BackendResources,
@@ -14,6 +16,7 @@ from ...benchmark.contracts import (
     RunContext,
 )
 from ...benchmark.kubernetes import KubectlClient
+from ...benchmark.manifest import dump_manifest
 from ...benchmark.network import (
     apply_secondary_network,
     discover_addresses,
@@ -29,6 +32,8 @@ from ...common.types import JsonValue
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST = PROJECT_ROOT / "manifests" / "nixl-template.yaml"
 DEFAULT_RUN_TIMEOUT_SECONDS = 1800
+GPU_RESOURCE = "nvidia.com/gpu"
+CPU_UCX_TLS = "tcp,self"
 
 
 class NixlRunner(BenchmarkRunner):
@@ -65,6 +70,8 @@ class NixlRunner(BenchmarkRunner):
             or run_timeout < 1
         ):
             raise ValueError("NIXL run_timeout_seconds must be a positive integer")
+        if not isinstance(config.parameters.get("gpu", True), bool):
+            raise ValueError("NIXL gpu must be true or false")
 
     def render_manifest(self, config: BenchmarkConfig, destination: Path) -> None:
         self.validate(config)
@@ -90,6 +97,8 @@ class NixlRunner(BenchmarkRunner):
                 "NIXL manifest still contains placeholder(s): "
                 + ", ".join(remaining)
             )
+        if not config.parameters.get("gpu", True):
+            manifest = _without_gpu(manifest)
         if config.network is not None:
             names = self.resource_names(config)
             roles = {names["initiator_pod"]: "initiator", names["target_pod"]: "target"}
@@ -378,6 +387,23 @@ class NixlRunner(BenchmarkRunner):
             context.report(text)
         else:
             print(text)
+
+
+def _without_gpu(manifest: str) -> str:
+    """Drop the GPU request and CUDA transport so the pods run on CPU-only nodes."""
+
+    documents = [doc for doc in yaml.safe_load_all(manifest) if doc is not None]
+    for document in documents:
+        if document.get("kind") != "Pod":
+            continue
+        for container in document.get("spec", {}).get("containers", []):
+            resources = container.get("resources", {})
+            for section in ("requests", "limits"):
+                resources.get(section, {}).pop(GPU_RESOURCE, None)
+            for variable in container.get("env", []):
+                if variable.get("name") == "UCX_TLS":
+                    variable["value"] = CPU_UCX_TLS
+    return dump_manifest(documents)
 
 
 def _minimum_total_buffer_size(

@@ -116,6 +116,34 @@ class NixlRunnerTests(unittest.TestCase):
             )
             self.assertIn("policy=Never", destination.read_text(encoding="utf-8"))
 
+    def test_gpu_false_removes_gpu_request_and_cuda_transport(self) -> None:
+        runner = NixlRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            gpu = Path(directory) / "gpu.yaml"
+            cpu = Path(directory) / "cpu.yaml"
+            runner.render_manifest(self.config(), gpu)
+            runner.render_manifest(
+                replace(self.config(), parameters={**self.config().parameters, "gpu": False}),
+                cpu,
+            )
+            gpu_text = gpu.read_text(encoding="utf-8")
+            cpu_text = cpu.read_text(encoding="utf-8")
+        self.assertEqual(gpu_text.count("nvidia.com/gpu"), 4)
+        self.assertIn("tcp,self,cuda_copy", gpu_text)
+        self.assertNotIn("nvidia.com/gpu", cpu_text)
+        self.assertNotIn("cuda_copy", cpu_text)
+        self.assertEqual(cpu_text.count("value: tcp,self"), 2)
+        self.assertIn("memory: 32Gi", cpu_text)  # other limits are kept
+        # YAML 1.1 readers (kubectl) turn a bare n into false.
+        self.assertIn('value: "n"', cpu_text)
+
+    def test_validation_rejects_non_boolean_gpu(self) -> None:
+        config = self.config()
+        with self.assertRaises(ValueError):
+            NixlRunner().validate(
+                replace(config, parameters={**config.parameters, "gpu": "no"})
+            )
+
     def network(self) -> SecondaryNetwork:
         return SecondaryNetwork(
             initiator=NetworkAttachment("cx7-a", "net1"),

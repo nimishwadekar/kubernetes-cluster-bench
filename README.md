@@ -30,7 +30,7 @@ The raw artifacts are authoritative. The framework does not require a normalized
 - Python environment with dependencies from [requirements.txt](./requirements.txt).
 - `kubectl` configured for the target Kubernetes cluster.
 - Nodes and container images suitable for the selected backend.
-- For NIXL, GPU-enabled nodes and a NIXLBench image containing `nixlbench`.
+- For NIXL, a NIXLBench image containing `nixlbench`. GPU-enabled nodes are needed by default; set `execution.nixl.gpu: false` to run on CPU-only nodes with a CPU-only image (see `images/Dockerfile.nixl-cpu`).
 
 The benchmark expects a Python venv, create and activate it:
 ```bash
@@ -159,7 +159,10 @@ execution:
   nixl:
     warmup_runs: 10
     run_timeout_seconds: 1800  # optional, default 1800
+    gpu: true                  # optional, default true
 ```
+
+`gpu: false` removes the `nvidia.com/gpu` request from both pods and replaces `UCX_TLS=tcp,self,cuda_copy` with `tcp,self`, so the pods can run on nodes without GPUs. The data path is DRAM to DRAM either way. Use an image that starts `nixlbench` without a CUDA driver, such as [Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu). The GPU image ([Dockerfile.nixl-gpu](./images/Dockerfile.nixl-gpu)) needs the NVIDIA driver at run time.
 
 `run_timeout_seconds` bounds each NIXLBench execution (one per thread count). If it expires, both processes are killed, the run is recorded as failed, and the benchmark continues with the next thread count. Unlike `timeout_seconds`, which covers pod readiness and initiator startup, it should be sized to the full block/batch sweep.
 
@@ -268,7 +271,7 @@ Backend-exposed fields are:
 | Backend | Execution fields | Dimensions |
 |---|---|---|
 | iperf3 | `duration_seconds`, `warmup_seconds` | `threads` |
-| nixl | `warmup_runs`, `run_timeout_seconds` | `threads`, `block_size`, `batch_size` |
+| nixl | `warmup_runs`, `run_timeout_seconds`, `gpu` | `threads`, `block_size`, `batch_size` |
 
 Values are validated before Kubernetes resources are created.
 

@@ -49,3 +49,4 @@ execution:
   nixl:
     warmup_runs: 10
     # run_timeout_seconds: 1800 # kill a NIXLBench execution that exceeds this
+    # gpu: false                # CPU-only nodes: no GPU request / CUDA transport (use an image built from images/Dockerfile.nixl-cpu)
