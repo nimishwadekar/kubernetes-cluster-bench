@@ -13,7 +13,7 @@ def create_plugin() -> BackendPlugin:
         runner_factory=NixlRunner,
         analyzer_factory=NixlAnalyzer,
         description="GPU buffer-transfer benchmark using NIXLBench",
-        profile_options=frozenset({"warmup_runs"}),
+        profile_options=frozenset({"warmup_runs", "run_timeout_seconds"}),
         profile_dimensions=frozenset({"threads", "block_size", "batch_size"}),
         graph_dimensions=frozenset({"threads", "block_size", "batch_size"}),
         framework_repeats=False,

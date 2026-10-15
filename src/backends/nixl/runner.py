@@ -21,6 +21,9 @@ from ...common.types import JsonValue
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST = PROJECT_ROOT / "manifests" / "nixl-template.yaml"
+DEFAULT_RUN_TIMEOUT_SECONDS = 1800
+
+
 class NixlRunner(BenchmarkRunner):
     """Run NIXLBench initiator and target processes on two GPU pods."""
 
@@ -46,6 +49,15 @@ class NixlRunner(BenchmarkRunner):
             or warmup_runs < 0
         ):
             raise ValueError("NIXL warmup_runs must be a non-negative integer")
+        run_timeout = config.parameters.get(
+            "run_timeout_seconds", DEFAULT_RUN_TIMEOUT_SECONDS
+        )
+        if (
+            isinstance(run_timeout, bool)
+            or not isinstance(run_timeout, int)
+            or run_timeout < 1
+        ):
+            raise ValueError("NIXL run_timeout_seconds must be a positive integer")
 
     def render_manifest(self, config: BenchmarkConfig, destination: Path) -> None:
         self.validate(config)
@@ -187,8 +199,24 @@ class NixlRunner(BenchmarkRunner):
             target_log,
         )
         self._processes[config.test_id] = (initiator, target)
-        target_status = target.wait()
-        initiator_status = initiator.wait()
+        run_timeout = int(
+            config.parameters.get("run_timeout_seconds", DEFAULT_RUN_TIMEOUT_SECONDS)
+        )
+        deadline = time.monotonic() + run_timeout
+        try:
+            target_status = target.wait(timeout=run_timeout)
+            initiator_status = initiator.wait(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
+        except subprocess.TimeoutExpired:
+            terminate_process(target)
+            terminate_process(initiator)
+            metadata["timed_out"] = True
+            metadata["finished_at"] = _utc_timestamp()
+            write_json(command_log, metadata)
+            raise RuntimeError(
+                f"NIXLBench timed out after {run_timeout}s (run_timeout_seconds)"
+            ) from None
         metadata["initiator_status"] = initiator_status
         metadata["target_status"] = target_status
         metadata["finished_at"] = _utc_timestamp()

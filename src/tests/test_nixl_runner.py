@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock
@@ -60,6 +61,45 @@ class NixlRunnerTests(unittest.TestCase):
             self.assertTrue(output.is_dir())
             runner.cleanup(self.config(), BackendResources(manifest_path=Path("manifest.yaml")))
         runner.kubectl.delete_manifest.assert_called_once()
+
+    def test_validation_rejects_invalid_run_timeout(self) -> None:
+        runner = NixlRunner()
+        config = self.config()
+        for value in (0, -5, True, "10"):
+            with self.assertRaises(ValueError):
+                runner.validate(
+                    replace(config, parameters={**config.parameters, "run_timeout_seconds": value})
+                )
+
+    def test_execute_times_out_and_terminates_processes(self) -> None:
+        class HangingProcess(FakeProcess):
+            terminated = False
+
+            def wait(self, timeout=None):
+                if timeout is not None and not self.terminated:
+                    raise subprocess.TimeoutExpired("nixlbench", timeout)
+                return super().wait(timeout)
+
+            def send_signal(self, _signal):
+                self.terminated = True
+
+        processes = {}
+        def start_exec(namespace, pod, command, path):
+            path.write_text("Using address 10.0.0.1 port 12345\n", encoding="utf-8")
+            processes[pod] = HangingProcess()
+            return processes[pod]
+
+        runner = NixlRunner(kubectl=Mock())
+        runner.kubectl.start_exec.side_effect = start_exec
+        resources = BackendResources(names={
+            "initiator_pod": "server", "target_pod": "client", "initiator_ip": "10.0.0.1",
+        })
+        config = self.config()
+        config = replace(config, parameters={**config.parameters, "run_timeout_seconds": 1})
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                runner.execute(config, resources, Path(directory) / "raw" / "t1")
+        self.assertTrue(all(process.terminated for process in processes.values()))
 
     def test_render_manifest_rejects_leftover_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

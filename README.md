@@ -154,7 +154,10 @@ execution:
   keep_resources: false
   nixl:
     warmup_runs: 10
+    run_timeout_seconds: 1800  # optional, default 1800
 ```
+
+`run_timeout_seconds` bounds each NIXLBench execution (one per thread count). If it expires, both processes are killed, the run is recorded as failed, and the benchmark continues with the next thread count. Unlike `timeout_seconds`, which covers pod readiness and initiator startup, it should be sized to the full block/batch sweep.
 
 NIXL currently hardcodes these execution settings:
 
@@ -203,7 +206,7 @@ Backend-exposed fields are:
 | Backend | Execution fields | Dimensions |
 |---|---|---|
 | iperf3 | `duration_seconds`, `warmup_seconds` | `threads` |
-| nixl | `warmup_runs` | `threads`, `block_size`, `batch_size` |
+| nixl | `warmup_runs`, `run_timeout_seconds` | `threads`, `block_size`, `batch_size` |
 
 Values are validated before Kubernetes resources are created.
 
