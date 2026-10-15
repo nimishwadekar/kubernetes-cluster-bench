@@ -15,6 +15,7 @@ from ...benchmark.contracts import (
 )
 from ...benchmark.kubernetes import KubectlClient
 from ...benchmark.process import terminate_process
+from ...benchmark.resources import apply_resources
 from ...common.console import Colors
 from ...common.types import JsonValue
 
@@ -83,6 +84,8 @@ class NixlRunner(BenchmarkRunner):
                 "NIXL manifest still contains placeholder(s): "
                 + ", ".join(remaining)
             )
+        if not config.resources.is_empty:
+            manifest = apply_resources(manifest, config.resources)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(manifest, encoding="utf-8")
 
@@ -176,6 +179,7 @@ class NixlRunner(BenchmarkRunner):
             "namespace": config.namespace,
             "image": config.image,
             "parameters": parameters,
+            "resource_overrides": _resource_overrides(config),
             "nixl_args": args,
             "initiator_file": initiator_log.name,
             "target_file": target_log.name,
@@ -341,6 +345,13 @@ def _format_eta(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {seconds}s"
     return f"{seconds}s"
+
+
+def _resource_overrides(config: BenchmarkConfig) -> dict[str, JsonValue]:
+    return {
+        "requests": dict(config.resources.requests),
+        "limits": dict(config.resources.limits),
+    }
 
 
 def _utc_timestamp() -> str:

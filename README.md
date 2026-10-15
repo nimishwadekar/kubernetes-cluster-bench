@@ -197,6 +197,26 @@ For NIXL, `runs` is passed to NIXLBench as `--num_iter`; the framework executes 
 
 A failed run is recorded and the benchmark continues with the next run. `execution.max_consecutive_failures` (default `5`, `0` disables) aborts the benchmark after that many failed runs in a row, so a broken cluster does not burn hours on runs that cannot succeed. Resources are still cleaned up, and remaining runs are reported as "not run". Any success resets the counter. At the end a summary line (`N/M runs succeeded, K failed, J not run`) is printed and the exit status is 1 if any run failed or the benchmark aborted.
 
+### Pod resources
+
+`execution.resources` sets CPU and memory for every benchmark container, mirroring Kubernetes `requests` and `limits`:
+
+```yaml
+execution:
+  resources:
+    requests: {cpu: 4, memory: 8Gi}
+    limits:   {cpu: 4, memory: 8Gi}
+```
+
+Only `cpu` and `memory` are supported, and only the values you give replace the manifest's. The built-in manifests use these defaults:
+
+| Backend | `requests` | `limits` |
+|---|---|---|
+| iperf3 | cpu 1, memory 1Gi | cpu 8, memory 16Gi |
+| nixl | cpu 1, memory 8Gi | cpu 8, memory 32Gi |
+
+The CPU limit is a CFS quota. If the work needs more cores than the limit (for example 8 threads with `limits.cpu: 1`), the pod is throttled and the result reflects the limit, not the network. Setting requests equal to limits makes the pods Guaranteed QoS, which gives more repeatable results and lets a node's static CPU manager assign dedicated cores if it is configured for that. A request above its limit (including the manifest's default limit) is rejected before any pod is created. The overrides are recorded as `resource_overrides` in each `*-command.json`.
+
 ### Image pull policy
 
 `execution.image_pull_policy` sets `imagePullPolicy` on every benchmark pod: `Always` (default), `IfNotPresent`, or `Never`. Use `IfNotPresent` or `Never` for images loaded directly onto the nodes (e.g. a local build that is not in a registry), where `Always` would fail the pull.
@@ -212,6 +232,7 @@ dimensions.threads
 execution.namespace, execution.image, execution.log_directory
 execution.runs, execution.timeout_seconds, execution.keep_resources
 execution.max_consecutive_failures, execution.image_pull_policy
+execution.resources.requests.{cpu,memory}, execution.resources.limits.{cpu,memory}
 ```
 
 Backend-exposed fields are:

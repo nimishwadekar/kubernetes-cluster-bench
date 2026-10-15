@@ -33,6 +33,13 @@ def print_configuration(
     print(f"  {'Logs directory:':<20} {config.log_directory}")
     print(f"  {'Image:':<20} {config.image}")
     print(f"  {'Backend:':<20} {config.backend}")
+    for kind, values in (
+        ("requests", config.resources.requests),
+        ("limits", config.resources.limits),
+    ):
+        if values:
+            settings = ", ".join(f"{name}={value}" for name, value in values.items())
+            print(f"  {'Pod ' + kind + ':':<20} {settings}")
     print(f"  {'Threads:':<20} {config.parameters.get('threads_spec', '1')}")
     if framework_repeats or config.backend != "nixl":
         print(f"  {'Protocol:':<20} TCP")

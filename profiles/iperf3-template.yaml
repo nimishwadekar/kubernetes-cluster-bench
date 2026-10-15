@@ -28,6 +28,9 @@ execution:
   timeout_seconds: 120          # pod readiness / server startup
   keep_resources: false
   # max_consecutive_failures: 5 # abort after N failed runs in a row (0 disables)
+  # resources:                  # defaults: requests cpu 1 / 1Gi, limits cpu 8 / 16Gi
+  #   requests: {cpu: 4, memory: 4Gi}   # equal requests and limits = Guaranteed QoS
+  #   limits:   {cpu: 4, memory: 4Gi}   # keep limits.cpu >= the thread count
   iperf3:
     duration_seconds: 5
     warmup_seconds: 1

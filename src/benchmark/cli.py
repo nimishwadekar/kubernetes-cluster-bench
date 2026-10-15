@@ -21,6 +21,7 @@ from .contracts import (
 from .overwrite import OverwriteDeclined, confirm_overwrite
 from .orchestrator import run_benchmark
 from .profile import load_profile, profile_section
+from .resources import PodResources
 
 
 COMMON_PROFILE_FIELDS = frozenset({"backend", "name", "test_id", "nodes", "dimensions", "execution"})
@@ -35,6 +36,7 @@ COMMON_EXECUTION_FIELDS = frozenset(
         "keep_resources",
         "max_consecutive_failures",
         "image_pull_policy",
+        "resources",
     }
 )
 
@@ -159,6 +161,7 @@ def parse_config(
         keep_resources=keep_resources,
         max_consecutive_failures=max_consecutive_failures,
         image_pull_policy=image_pull_policy,
+        resources=_parse_resources(execution),
         parameters=parameters,
     )
 
@@ -206,6 +209,24 @@ def _print_summary(execution: BenchmarkExecution, colors: Colors) -> None:
         )
     if execution.aborted_reason is not None:
         print(f"ERROR: {execution.aborted_reason}", file=sys.stderr)
+
+
+def _parse_resources(execution: Mapping[str, object]) -> PodResources:
+    section = profile_section(execution, "resources")
+    _reject_unknown_fields(
+        section, frozenset({"requests", "limits"}), "profile.execution.resources"
+    )
+    parsed: dict[str, dict[str, str]] = {}
+    for kind in ("requests", "limits"):
+        values = profile_section(section, kind)
+        location = f"profile.execution.resources.{kind}"
+        _reject_unknown_fields(values, frozenset({"cpu", "memory"}), location)
+        parsed[kind] = {}
+        for name, value in values.items():
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise ValueError(f"{location}.{name} must be a string or number")
+            parsed[kind][name] = str(value)
+    return PodResources(requests=parsed["requests"], limits=parsed["limits"])
 
 
 def _reject_unknown_fields(

@@ -115,6 +115,25 @@ class NixlRunnerTests(unittest.TestCase):
             )
             self.assertIn("policy=Never", destination.read_text(encoding="utf-8"))
 
+    def test_resources_override_cpu_and_memory_but_keep_gpu(self) -> None:
+        import yaml
+        from src.benchmark.resources import PodResources
+
+        config = replace(
+            self.config(),
+            resources=PodResources({"cpu": "4"}, {"cpu": "4", "memory": "16Gi"}),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "manifest.yaml"
+            NixlRunner().render_manifest(config, destination)
+            docs = list(yaml.safe_load_all(destination.read_text(encoding="utf-8")))
+        for doc in docs:
+            resources = doc["spec"]["containers"][0]["resources"]
+            self.assertEqual(resources["requests"]["cpu"], "4")
+            self.assertEqual(resources["requests"]["memory"], "8Gi")  # template default kept
+            self.assertEqual(resources["limits"], {"cpu": "4", "memory": "16Gi", "nvidia.com/gpu": "1"})
+
+
     def test_render_manifest_rejects_leftover_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             template = Path(directory) / "template.yaml"

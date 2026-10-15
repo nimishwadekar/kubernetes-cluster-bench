@@ -176,6 +176,37 @@ execution:
         with self.assertRaisesRegex(ValueError, "image_pull_policy"):
             load("  image_pull_policy: Sometimes\n")
 
+    def test_resources_profile_section(self) -> None:
+        template = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        self.assertTrue(load("").resources.is_empty)
+        resources = load(
+            "  resources:\n    requests: {cpu: 2, memory: 4Gi}\n    limits: {cpu: 4}\n"
+        ).resources
+        self.assertEqual(dict(resources.requests), {"cpu": "2", "memory": "4Gi"})
+        self.assertEqual(dict(resources.limits), {"cpu": "4"})
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            load("  resources:\n    requests: {gpu: 1}\n")
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            load("  resources:\n    cpu: 2\n")
+        with self.assertRaisesRegex(ValueError, "limits.memory"):
+            load("  resources:\n    limits: {memory: lots}\n")
+        with self.assertRaisesRegex(ValueError, "must be a string or number"):
+            load("  resources:\n    limits: {cpu: true}\n")
+
     def test_missing_image_is_rejected(self) -> None:
         profile = """\
 backend: iperf3

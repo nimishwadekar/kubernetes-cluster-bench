@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -55,6 +56,32 @@ class Iperf3RunnerTests(unittest.TestCase):
             self.assertTrue(output.is_dir())
             runner.cleanup(self.config(), BackendResources(manifest_path=Path("manifest.yaml")))
         runner.kubectl.delete_manifest.assert_called_once()
+
+    def test_resources_override_cpu_and_memory(self) -> None:
+        import yaml
+        from src.benchmark.resources import PodResources
+
+        config = replace(
+            self.config(),
+            resources=PodResources({"cpu": "4", "memory": "4Gi"}, {"cpu": "4", "memory": "4Gi"}),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "manifest.yaml"
+            Iperf3Runner().render_manifest(config, destination)
+            docs = [d for d in yaml.safe_load_all(destination.read_text(encoding="utf-8")) if d["kind"] == "Pod"]
+        self.assertEqual(len(docs), 2)
+        for doc in docs:
+            resources = doc["spec"]["containers"][0]["resources"]
+            self.assertEqual(resources["requests"], {"cpu": "4", "memory": "4Gi"})
+            self.assertEqual(resources["limits"], {"cpu": "4", "memory": "4Gi"})
+
+    def test_invalid_resources_fail_before_deploy(self) -> None:
+        from src.benchmark.resources import PodResources
+
+        config = replace(self.config(), resources=PodResources({"cpu": "16"}))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "exceeds limit"):
+                Iperf3Runner().render_manifest(config, Path(directory) / "m.yaml")
 
 
 if __name__ == "__main__":

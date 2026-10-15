@@ -30,6 +30,9 @@ execution:
   timeout_seconds: 120          # pod readiness / initiator startup
   keep_resources: false
   # max_consecutive_failures: 5 # abort after N failed runs in a row (0 disables)
+  # resources:                  # defaults: requests cpu 1 / 8Gi, limits cpu 8 / 32Gi
+  #   requests: {cpu: 8, memory: 8Gi}   # equal requests and limits = Guaranteed QoS
+  #   limits:   {cpu: 8, memory: 8Gi}   # keep limits.cpu >= the thread count
   nixl:
     warmup_runs: 10
     # run_timeout_seconds: 1800 # kill a NIXLBench execution that exceeds this
