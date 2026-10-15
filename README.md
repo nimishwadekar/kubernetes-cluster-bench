@@ -32,6 +32,12 @@ The raw artifacts are authoritative. The framework does not require a normalized
 - Nodes and container images suitable for the selected backend.
 - For NIXL, GPU-enabled nodes and a NIXLBench image containing `nixlbench`.
 
+The benchmark expects a Python venv, create and activate it:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
 Install Python dependencies with:
 
 ```bash
