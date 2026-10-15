@@ -49,7 +49,8 @@ python3 -m pip install -r requirements.txt
 The Dockerfiles are in [images/](./images/):
 
 - [images/Dockerfile.iperf3](./images/Dockerfile.iperf3): iperf3 runtime image.
-- [images/Dockerfile.nixl](./images/Dockerfile.nixl): vLLM-based NIXLBench image.
+- [images/Dockerfile.nixl-gpu](./images/Dockerfile.nixl-gpu): GPU NIXLBench image (CUDA 13). NIXL and UCX come from the `nixl-cu13` wheel, on a minimal CUDA base image.
+- [images/Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu): CPU-only NIXLBench image built from source on Ubuntu (UCX, NIXL with the UCX plugin, `nixlbench`; about 130 MB). Use it with `execution.nixl.gpu: false`.
 
 Build the iperf3 image from the repository root:
 
@@ -60,16 +61,27 @@ docker build \
   .
 ```
 
-Build the NIXL image for the cluster architecture:
+Build the GPU NIXL image for the cluster architecture. It copies nothing from the build context, so use the small `images/` directory as the context. `--build-arg CUDA_VERSION=...` and `--build-arg NIXL_VERSION=...` override the CUDA base image and the NIXL version:
 
 ```bash
 docker buildx build \
   --platform linux/amd64 \
-  -f images/Dockerfile.nixl \
-  -t <registry>/nixl-benchmark:<tag> \
+  -f images/Dockerfile.nixl-gpu \
+  -t <registry>/nixl-benchmark:gpu \
   --push \
-  .
+  images/
 ```
+
+Build the CPU-only NIXL image. It copies nothing from the build context, so use the small `images/` directory as the context:
+
+```bash
+docker build \
+  -f images/Dockerfile.nixl-cpu \
+  -t <registry>/nixl-benchmark:cpu \
+  images/
+```
+
+It builds UCX 1.22.0 and NIXL v1.4.1 from source (`--build-arg UCX_VERSION=...` and `--build-arg NIXL_VERSION=...` override them), so the first build takes a while. It supports DRAM to DRAM transfers only; VRAM is not available.
 
 Push each image to a registry reachable by every node and place the resulting image reference in the profile. The Python benchmark runner does not build or push images.
 
