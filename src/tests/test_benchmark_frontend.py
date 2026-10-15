@@ -153,6 +153,56 @@ class BenchmarkFrontendTests(unittest.TestCase):
         self.assertEqual(execution.outcomes[1].error, "simulated run failure")
         self.assertTrue(runner.cleaned)
 
+    def test_frontend_aborts_after_consecutive_failures(self) -> None:
+        class AlwaysFailing(FakeRunner):
+            def execute(self, config, resources, output_directory, context=None):
+                self.calls.append((config.parameters["threads"], config.parameters["run_number"]))
+                raise RuntimeError("cluster down")
+
+        runner = AlwaysFailing()
+        registry = BackendRegistry(
+            (BackendPlugin(name="fake", runner_factory=lambda: runner),)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                self.make_config(Path(directory), runs=3),
+                max_consecutive_failures=2,
+            )
+            execution = run_benchmark(config, registry)
+        self.assertEqual(runner.calls, [(1, 1), (1, 2)])
+        self.assertEqual(execution.planned_runs, 6)
+        self.assertEqual(execution.not_run, 4)
+        self.assertFalse(execution.successful)
+        self.assertIn("2 consecutive", execution.aborted_reason or "")
+        self.assertTrue(runner.cleaned)
+
+    def test_success_resets_consecutive_failure_count(self) -> None:
+        class Alternating(FakeRunner):
+            def execute(self, config, resources, output_directory, context=None):
+                if config.parameters["run_number"] == 1:
+                    raise RuntimeError("flaky")
+                return super().execute(config, resources, output_directory, context)
+
+        runner = Alternating()
+        registry = BackendRegistry(
+            (BackendPlugin(name="fake", runner_factory=lambda: runner),)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                self.make_config(Path(directory), runs=2),
+                max_consecutive_failures=2,
+            )
+            execution = run_benchmark(config, registry)
+        self.assertEqual(len(execution.outcomes), 4)
+        self.assertIsNone(execution.aborted_reason)
+
+    def test_zero_disables_abort(self) -> None:
+        self.assertEqual(
+            replace(self.make_config(Path("logs")), max_consecutive_failures=0)
+            .max_consecutive_failures,
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

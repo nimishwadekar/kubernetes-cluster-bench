@@ -78,11 +78,15 @@ def run_benchmark(
     resources = None
     outcomes: list[RunOutcome] = []
     completed_runs = 0
+    consecutive_failures = 0
+    aborted_reason: str | None = None
     try:
         resources = runner.deploy(config, manifest_path)
         print(f"{output_colors.cyan}Network service created{output_colors.reset}")
         print(f"{output_colors.cyan}Server and client pods running{output_colors.reset}")
         for thread_count in thread_values:
+            if aborted_reason is not None:
+                break
             for run_number in run_numbers:
                 parameters = dict(config.parameters)
                 parameters["threads"] = thread_count
@@ -109,6 +113,7 @@ def run_benchmark(
                         context,
                     )
                 except Exception as error:
+                    consecutive_failures += 1
                     outcomes.append(
                         RunOutcome(
                             thread_count=thread_count,
@@ -123,6 +128,7 @@ def run_benchmark(
                         file=sys.stderr,
                     )
                 else:
+                    consecutive_failures = 0
                     outcome = RunOutcome(
                         thread_count=thread_count,
                         run_number=run_number,
@@ -135,6 +141,17 @@ def run_benchmark(
                         f"{output_colors.reset}\n"
                     )
                 completed_runs += 1
+                limit = config.max_consecutive_failures
+                if limit and consecutive_failures >= limit:
+                    aborted_reason = (
+                        f"aborted after {consecutive_failures} consecutive failed "
+                        "runs (max_consecutive_failures)"
+                    )
+                    print(
+                        f"{output_colors.red}{aborted_reason}{output_colors.reset}",
+                        file=sys.stderr,
+                    )
+                    break
     finally:
         runner.cleanup(config, resources)
 
@@ -144,6 +161,8 @@ def run_benchmark(
         test_directory=test_directory,
         manifest_path=manifest_path,
         outcomes=tuple(outcomes),
+        planned_runs=total_runs,
+        aborted_reason=aborted_reason,
     )
 
 

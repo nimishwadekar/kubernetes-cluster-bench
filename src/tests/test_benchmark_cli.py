@@ -124,6 +124,28 @@ execution:
             with self.assertRaisesRegex(ValueError, "powers of two"):
                 parse_config(["--profile", str(profile_path)])
 
+    def test_max_consecutive_failures_profile_field(self) -> None:
+        template = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        self.assertEqual(load("").max_consecutive_failures, 5)
+        self.assertEqual(load("  max_consecutive_failures: 0\n").max_consecutive_failures, 0)
+        self.assertEqual(load("  max_consecutive_failures: 3\n").max_consecutive_failures, 3)
+        with self.assertRaises(ValueError):
+            load("  max_consecutive_failures: -1\n")
+
     def test_missing_image_is_rejected(self) -> None:
         profile = """\
 backend: iperf3

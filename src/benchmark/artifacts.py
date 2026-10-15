@@ -31,6 +31,12 @@ class BenchmarkExecution:
     test_directory: Path
     manifest_path: Path
     outcomes: tuple[RunOutcome, ...]
+    planned_runs: int = 0
+    aborted_reason: str | None = None
+
+    @property
+    def not_run(self) -> int:
+        return max(0, self.planned_runs - len(self.outcomes))
 
     @property
     def raw_directory(self) -> Path:
@@ -38,7 +44,9 @@ class BenchmarkExecution:
 
     @property
     def successful(self) -> bool:
-        return all(outcome.successful for outcome in self.outcomes)
+        return self.aborted_reason is None and all(
+            outcome.successful for outcome in self.outcomes
+        )
 
 
 def create_test_directory(

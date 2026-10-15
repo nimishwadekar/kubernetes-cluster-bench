@@ -8,10 +8,11 @@ import sys
 from typing import Mapping, Sequence
 
 from ..backends.registry import BackendRegistry, default_registry
-from ..common.console import terminal_colors
+from ..common.console import Colors, terminal_colors
 from ..common.types import JsonValue
 from .kubernetes import KubectlClient
-from .contracts import BenchmarkConfig
+from .artifacts import BenchmarkExecution
+from .contracts import DEFAULT_MAX_CONSECUTIVE_FAILURES, BenchmarkConfig
 from .overwrite import OverwriteDeclined, confirm_overwrite
 from .orchestrator import run_benchmark
 from .profile import load_profile, profile_section
@@ -20,7 +21,15 @@ from .profile import load_profile, profile_section
 COMMON_PROFILE_FIELDS = frozenset({"backend", "name", "test_id", "nodes", "dimensions", "execution"})
 COMMON_NODE_FIELDS = frozenset({"initiator", "target"})
 COMMON_EXECUTION_FIELDS = frozenset(
-    {"namespace", "image", "log_directory", "runs", "timeout_seconds", "keep_resources"}
+    {
+        "namespace",
+        "image",
+        "log_directory",
+        "runs",
+        "timeout_seconds",
+        "keep_resources",
+        "max_consecutive_failures",
+    }
 )
 
 
@@ -115,6 +124,11 @@ def parse_config(
     timeout = _profile_positive_int(
         execution.get("timeout_seconds"), "timeout_seconds", default=120
     )
+    max_consecutive_failures = _profile_nonnegative_int(
+        execution.get("max_consecutive_failures"),
+        "max_consecutive_failures",
+        default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    )
     keep_resources = _profile_bool(
         execution.get("keep_resources"), "keep_resources", default=False
     )
@@ -131,6 +145,7 @@ def parse_config(
         runs=runs,
         timeout_seconds=timeout,
         keep_resources=keep_resources,
+        max_consecutive_failures=max_consecutive_failures,
         parameters=parameters,
     )
 
@@ -155,16 +170,29 @@ def main(
     except (EOFError, OSError, RuntimeError, ValueError) as error:
         print(f"{colors.red}ERROR:{colors.reset} {error}", file=sys.stderr)
         return 2
-    if not execution.successful:
-        for outcome in execution.outcomes:
-            if outcome.error is not None:
-                print(
-                    f"ERROR: threads={outcome.thread_count}, "
-                    f"run={outcome.run_number}: {outcome.error}",
-                    file=sys.stderr,
-                )
-        return 1
-    return 0
+    _print_summary(execution, colors)
+    return 0 if execution.successful else 1
+
+
+def _print_summary(execution: BenchmarkExecution, colors: Colors) -> None:
+    failed = [outcome for outcome in execution.outcomes if not outcome.successful]
+    succeeded = len(execution.outcomes) - len(failed)
+    total = execution.planned_runs or len(execution.outcomes)
+    parts = [f"{succeeded}/{total} runs succeeded"]
+    if failed:
+        parts.append(f"{len(failed)} failed")
+    if execution.not_run:
+        parts.append(f"{execution.not_run} not run")
+    color = colors.green if execution.successful else colors.red
+    print(f"{color}Benchmark summary: {', '.join(parts)}{colors.reset}")
+    for outcome in failed:
+        print(
+            f"ERROR: threads={outcome.thread_count}, "
+            f"run={outcome.run_number}: {outcome.error}",
+            file=sys.stderr,
+        )
+    if execution.aborted_reason is not None:
+        print(f"ERROR: {execution.aborted_reason}", file=sys.stderr)
 
 
 def _reject_unknown_fields(
@@ -259,12 +287,13 @@ def _profile_nonnegative_int(
     name: str,
     *,
     required: bool = False,
+    default: int = 0,
     location: str = "execution",
 ) -> int:
     if value is None:
         if required:
             raise ValueError(f"profile field '{location}.{name}' is required")
-        return 0
+        return default
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"profile field {name!r} must be a non-negative integer")
     return value

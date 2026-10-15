@@ -189,6 +189,10 @@ assuming one initiator and one target device, then passes the calculated value t
 
 For NIXL, `runs` is passed to NIXLBench as `--num_iter`; the framework executes once per thread dimension rather than repeating the whole NIXL process.
 
+### Failure handling
+
+A failed run is recorded and the benchmark continues with the next run. `execution.max_consecutive_failures` (default `5`, `0` disables) aborts the benchmark after that many failed runs in a row, so a broken cluster does not burn hours on runs that cannot succeed. Resources are still cleaned up, and remaining runs are reported as "not run". Any success resets the counter. At the end a summary line (`N/M runs succeeded, K failed, J not run`) is printed and the exit status is 1 if any run failed or the benchmark aborted.
+
 ### Profile validation
 
 The loader rejects unknown fields. Common fields are:
@@ -199,6 +203,7 @@ nodes.initiator, nodes.target
 dimensions.threads
 execution.namespace, execution.image, execution.log_directory
 execution.runs, execution.timeout_seconds, execution.keep_resources
+execution.max_consecutive_failures
 ```
 
 Backend-exposed fields are:

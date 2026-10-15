@@ -9,6 +9,9 @@ from ..common.console import Colors
 from ..common.types import JsonValue
 
 
+DEFAULT_MAX_CONSECUTIVE_FAILURES = 5
+
+
 def _empty_json_mapping() -> dict[str, JsonValue]:
     return {}
 
@@ -33,6 +36,7 @@ class BenchmarkConfig:
     runs: int = 1
     timeout_seconds: int = 120
     keep_resources: bool = False
+    max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES
     parameters: Mapping[str, JsonValue] = field(default_factory=_empty_json_mapping)
 
     def __post_init__(self) -> None:
@@ -58,6 +62,8 @@ class BenchmarkConfig:
             raise ValueError("runs must be positive")
         if self.timeout_seconds < 1:
             raise ValueError("timeout_seconds must be positive")
+        if self.max_consecutive_failures < 0:
+            raise ValueError("max_consecutive_failures must not be negative")
 
     @property
     def output_name(self) -> str:
