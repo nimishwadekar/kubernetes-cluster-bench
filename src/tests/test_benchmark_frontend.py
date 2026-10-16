@@ -13,7 +13,8 @@ from src.benchmark.contracts import (
     BenchmarkConfig,
     RunContext,
 )
-from src.benchmark.orchestrator import parse_thread_spec, run_benchmark
+from src.benchmark.orchestrator import run_benchmark
+from src.benchmark.utils import parse_thread_spec
 
 
 class FakeRunner:

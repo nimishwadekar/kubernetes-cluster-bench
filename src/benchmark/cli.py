@@ -23,6 +23,7 @@ from .overwrite import OverwriteDeclined, confirm_overwrite
 from .orchestrator import run_benchmark
 from .profile import load_profile, profile_section
 from .resources import PodResources
+from .utils import parse_thread_spec
 
 
 COMMON_PROFILE_FIELDS = frozenset(
@@ -97,6 +98,18 @@ def parse_config(
     )
     parameters: dict[str, JsonValue] = {}
     for name, value in backend_parameters.items():
+        if name in plugin.profile_mapping_options:
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(f"profile parameter {name!r} must be a mapping")
+            for key, item in (value or {}).items():
+                if not isinstance(key, str) or (
+                    not isinstance(item, (str, int, float, bool)) or item is None
+                ):
+                    raise ValueError(
+                        f"profile parameter {name!r} must map names to scalar values"
+                    )
+            parameters[name] = dict(value or {})  # type: ignore[assignment]
+            continue
         if not isinstance(value, (str, int, float, bool)) and value is not None:
             raise ValueError(f"profile parameter {name!r} must be a scalar")
         parameters[name] = value  # type: ignore[assignment]
@@ -116,7 +129,7 @@ def parse_config(
         raise ValueError("initiator and target nodes must be different")
 
     threads_spec = _profile_thread_spec(dimensions.get("threads"))
-    thread_values = _parse_thread_spec(threads_spec)
+    thread_values = parse_thread_spec(threads_spec)
     parameters["threads"] = thread_values[0]
     parameters["threads_spec"] = threads_spec
     if backend == "nixl":
@@ -398,19 +411,6 @@ def _profile_bool(
     if not isinstance(value, bool):
         raise ValueError(f"profile field {name!r} must be boolean")
     return value
-
-
-def _parse_thread_spec(value: str) -> tuple[int, ...]:
-    parts = value.split(":")
-    if len(parts) not in (1, 2, 3) or any(not part.isdigit() for part in parts):
-        raise ValueError("threads must use start[:end[:step]] with positive values")
-    numbers = [int(part) for part in parts]
-    start = numbers[0]
-    end = start if len(numbers) == 1 else numbers[1]
-    step = 1 if len(numbers) < 3 else numbers[2]
-    if start < 1 or end < start or step < 1:
-        raise ValueError("threads must use positive values with start <= end")
-    return tuple(range(start, end + 1, step))
 
 
 def _default_test_id() -> str:

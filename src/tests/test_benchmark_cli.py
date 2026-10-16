@@ -265,6 +265,34 @@ execution:
         with self.assertRaisesRegex(ValueError, "must be a string or number"):
             load("  resources:\n    limits: {cpu: true}\n")
 
+    def test_nixl_args_and_env_profile_sections(self) -> None:
+        template = """\
+backend: nixl
+nodes:
+  initiator: worker-a
+  target: worker-b
+dimensions: {block_size: "4M", batch_size: 1}
+execution:
+  image: example/image:latest
+  namespace: bench
+  nixl:
+    warmup_runs: 1
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        config = load("    args: {pipeline_depth: 16, enable_pt: true}\n    env: {UCX_ZCOPY_THRESH: 1K, UCX_TCP_NODELAY: false}\n")
+        self.assertEqual(config.parameters["args"], {"pipeline_depth": 16, "enable_pt": True})
+        self.assertEqual(config.parameters["env"], {"UCX_ZCOPY_THRESH": "1K", "UCX_TCP_NODELAY": False})
+        self.assertNotIn("args", load("").parameters)
+        with self.assertRaisesRegex(ValueError, "must be a mapping"):
+            load("    args: [pipeline_depth]\n")
+        with self.assertRaisesRegex(ValueError, "scalar values"):
+            load("    env: {UCX_TLS: [tcp]}\n")
+
     def test_missing_image_is_rejected(self) -> None:
         profile = """\
 backend: iperf3

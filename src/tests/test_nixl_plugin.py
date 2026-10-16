@@ -105,6 +105,78 @@ class NixlPluginTests(unittest.TestCase):
         self.assertEqual(observations[0].dimensions["batch_size"], 1)
         self.assertAlmostEqual(observations[0].value, 1.575178e9 * 8)
 
+    def make_processes(self, directory: Path, rates: list[list[float]], blocks=((4194304, 1), (4194304, 2))) -> Path:
+        """A processes run: rates[point][process] in GB/s for each (block, batch) point."""
+
+        raw = directory / "raw"
+        run = raw / f"t{len(rates[0])}"
+        run.mkdir(parents=True)
+        points = []
+        for (block, batch), point_rates in zip(blocks, rates):
+            files = []
+            for index, rate in enumerate(point_rates, start=1):
+                stem = f"nixl-test-b{block}-n{batch}-p{index}"
+                (run / f"{stem}-initiator.log").write_text(
+                    "Block Size (B)      Batch Size     B/W (GB/Sec)   Avg Lat. (us)\n"
+                    f"{block:<20}{batch:<15}{rate:<15.6f}66.0\n",
+                    encoding="utf-8",
+                )
+                (run / f"{stem}-target.log").write_text(NIXL_TARGET_FIXTURE, encoding="utf-8")
+                files.append({
+                    "asio_port": 12345, "initiator_file": f"{stem}-initiator.log",
+                    "target_file": f"{stem}-target.log",
+                })
+            points.append({"block_size": block, "batch_size": batch, "files": files})
+        command = {
+            "backend": "nixl", "test_id": "nixl-test", "run_number": 1,
+            "parallelism": "processes", "processes": len(rates[0]), "points": points,
+            "initiator_status": 0, "target_status": 0,
+        }
+        (run / "nixl-test-t2-run1-command.json").write_text(json.dumps(command), encoding="utf-8")
+        return raw
+
+    def test_processes_aggregate_is_n_times_the_slowest_process(self) -> None:
+        parser = NixlParser()
+        with tempfile.TemporaryDirectory() as directory:
+            raw = self.make_processes(Path(directory), [[4.0, 4.0, 2.3, 2.3], [3.0, 3.0, 3.0, 3.0]])
+            observations = parser.parse(parser.discover(raw)[0])
+        self.assertEqual(len(observations), 2)
+        first, second = observations
+        self.assertEqual(first.dimensions, {"threads": 4, "block_size_bytes": 4194304, "batch_size": 1})
+        # Adding the averages would give 12.6 GB/s; the aggregate is 4 x 2.3 GB/s.
+        self.assertAlmostEqual(first.value, 4 * 2.3 * 8e9)
+        self.assertAlmostEqual(first.metadata["skew"], 4.0 / 2.3)
+        self.assertEqual(first.metadata["process_rates_GB_s"], [4.0, 4.0, 2.3, 2.3])
+        self.assertAlmostEqual(second.value, 12.0 * 8e9)
+        self.assertAlmostEqual(second.metadata["skew"], 1.0)
+        self.assertEqual(len(first.metadata["initiator_files"]), 4)
+
+    def test_processes_aggregate_cannot_exceed_the_slowest_times_n(self) -> None:
+        parser = NixlParser()
+        with tempfile.TemporaryDirectory() as directory:
+            raw = self.make_processes(Path(directory), [[4.0, 4.0, 4.8, 4.7]])
+            (value,) = [o.value for o in parser.parse(parser.discover(raw)[0])]
+        self.assertAlmostEqual(value, 4 * 4.0 * 8e9)
+
+    def test_processes_run_with_a_missing_row_is_rejected(self) -> None:
+        parser = NixlParser()
+        with tempfile.TemporaryDirectory() as directory:
+            raw = self.make_processes(Path(directory), [[3.0, 3.0]])
+            (raw / "t2" / "nixl-test-b4194304-n1-p2-initiator.log").write_text("no rows\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "expected one block_size=4194304 batch_size=1 row"):
+                parser.parse(parser.discover(raw)[0])
+
+    def test_datasets_from_the_row_summing_version_are_rejected(self) -> None:
+        parser = NixlParser()
+        with tempfile.TemporaryDirectory() as directory:
+            raw = self.make_fixture(Path(directory))
+            command_path = raw / "t2" / "nixl-test-t2-run1-command.json"
+            command = json.loads(command_path.read_text(encoding="utf-8"))
+            command["instance_files"] = [{"initiator_file": "a", "target_file": "b"}]
+            command_path.write_text(json.dumps(command), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "run it again"):
+                parser.parse(parser.discover(raw)[0])
+
     def test_analyzer_requires_filter_or_series_for_varying_dimensions(self) -> None:
         parser = NixlParser()
         analyzer = NixlAnalyzer(parser)

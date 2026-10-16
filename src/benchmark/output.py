@@ -61,7 +61,7 @@ def print_configuration(
             f"{_format_bytes(config.parameters['block_size_max'])}"
         )
         max_transfer = int(config.parameters['block_size_max']) * int(config.parameters['batch_size_max'])
-        threads = int(config.parameters['threads'])
+        threads = 1 if config.parameters.get("parallelism") == "processes" else int(config.parameters['threads'])
         total_buffer = max_transfer * threads
         print(f"  {'Total buffer:':<20} {_format_bytes(total_buffer)}")
         print(
@@ -70,6 +70,16 @@ def print_configuration(
         )
         print(f"  {'Iterations:':<20} {config.runs}")
         print(f"  {'Warmup iterations:':<20} {config.parameters['warmup_runs']}")
+        if config.parameters.get("parallelism", "threads") == "processes":
+            print(
+                f"  {'Parallelism:':<20} processes (each thread count runs that many "
+                "single-thread nixlbench pairs, one sweep point at a time)"
+            )
+        for label, key in (("NIXL args:", "args"), ("NIXL env:", "env")):
+            settings = config.parameters.get(key)
+            if settings:
+                text = ", ".join(f"{name}={value}" for name, value in settings.items())
+                print(f"  {label:<20} {text}")
     print()
 
 
@@ -83,14 +93,18 @@ def print_run_dimensions(
     delimiter = f"{colors.cyan}{'=' * 72}{colors.reset}"
     print(f"\n{delimiter}")
     print(f"{colors.cyan}NIXL run dimensions{colors.reset}")
-    print(f"  {'Threads:':<20} {parameters.get('threads')}")
+    processes = parameters.get("parallelism", "threads") == "processes"
+    print(
+        f"  {'Threads:':<20} {parameters.get('threads')}"
+        + (" (processes of 1 thread each)" if processes else "")
+    )
     print(
         f"  {'Block size:':<20} "
         f"{_format_bytes(parameters['block_size_start'])}:"
         f"{_format_bytes(parameters['block_size_max'])}"
     )
     max_transfer = int(parameters['block_size_max']) * int(parameters['batch_size_max'])
-    threads = int(parameters['threads'])
+    threads = 1 if processes else int(parameters['threads'])
     total_buffer = max_transfer * threads
     print(f"  {'Total buffer:':<20} {total_buffer} bytes")
     print(

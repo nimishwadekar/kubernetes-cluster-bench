@@ -160,8 +160,8 @@ FROM ubuntu:${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Runtime libraries only. ibverbs-providers carries the mlx5 provider so UCX
-# can use a ConnectX device when one is visible in the pod.
+# Runtime libraries only. ibverbs-providers carries the verbs drivers so UCX
+# can use an RDMA-capable NIC when one is visible in the pod.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ibverbs-providers \

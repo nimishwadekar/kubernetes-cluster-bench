@@ -16,24 +16,10 @@ from .artifacts import (
 )
 from .contracts import BenchmarkConfig, RunContext
 from .output import print_configuration, print_results, print_run_dimensions
+from .utils import parse_thread_spec
 
 
 Report = Callable[[str], None]
-
-
-def parse_thread_spec(value: str) -> tuple[int, ...]:
-    """Parse an inclusive start[:end[:step]] thread range."""
-
-    parts = value.split(":")
-    if len(parts) not in (1, 2, 3) or any(not part.isdigit() for part in parts):
-        raise ValueError("threads must use start[:end[:step]] with positive values")
-    numbers = [int(part) for part in parts]
-    start = numbers[0]
-    end = start if len(numbers) == 1 else numbers[1]
-    step = 1 if len(numbers) < 3 else numbers[2]
-    if start < 1 or end < start or step < 1:
-        raise ValueError("threads must use positive values with start <= end")
-    return tuple(range(start, end + 1, step))
 
 
 def run_benchmark(

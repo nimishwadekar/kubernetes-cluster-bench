@@ -20,6 +20,7 @@ class BackendPlugin:
     analyzer_factory: Callable[[], ResultAnalyzer] | None = None
     description: str = ""
     profile_options: frozenset[str] = frozenset()
+    profile_mapping_options: frozenset[str] = frozenset()
     profile_dimensions: frozenset[str] = frozenset()
     graph_dimensions: frozenset[str] = frozenset()
     framework_repeats: bool = True

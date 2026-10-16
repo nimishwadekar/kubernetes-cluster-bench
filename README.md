@@ -172,6 +172,7 @@ execution:
     warmup_runs: 10
     run_timeout_seconds: 1800  # optional, default 1800
     gpu: true                  # optional, default true
+    parallelism: threads       # optional: threads (default) or processes, see "NIXL parallelism"
 ```
 
 `gpu: false` removes the `nvidia.com/gpu` request from both pods and replaces `UCX_TLS=tcp,self,cuda_copy` with `tcp,self`, so the pods can run on nodes without GPUs. The data path is DRAM to DRAM either way. Use an image that starts `nixlbench` without a CUDA driver, such as [Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu). The GPU image ([Dockerfile.nixl-gpu](./images/Dockerfile.nixl-gpu)) needs the NVIDIA driver at run time.
@@ -185,7 +186,7 @@ runtime: ASIO
 transport/backend: UCX
 initiator memory: DRAM
 target memory: DRAM
-ASIO port: 12345
+ASIO port: 12345 (each nixlbench pair of a run gets the next port)
 ```
 
 The runner derives the ASIO address from the initiator pod IP (or from its secondary interface when a `network` section is set). It maps:
@@ -215,11 +216,11 @@ By default the iperf3 client connects to the server pod's Kubernetes Service, an
 ```yaml
 network:
   initiator:
-    attachment: cx7-rack35     # NetworkAttachmentDefinition name, or <namespace>/<name>
+    attachment: nic-a          # NetworkAttachmentDefinition name, or <namespace>/<name>
     interface: net1            # optional, default net1
     ip: 10.10.0.1/24           # optional
   target:
-    attachment: cx7-rack36
+    attachment: nic-b
     interface: net1
     ip: 10.10.0.2/24
 ```
@@ -234,6 +235,55 @@ The `NetworkAttachmentDefinition`s must already exist in the cluster (the framew
 `ip` is optional. Without it the address comes from the attachment's IPAM. With it, the address is requested through Multus (`ips` in the annotation, which needs a static-capable IPAM) and the run fails before any traffic if the pod ends up with a different address. It must include a prefix length. The resolved addresses are recorded under `network` in each `*-command.json`.
 
 Backends that do not support `network` reject the section instead of ignoring it. NIXL runs over TCP here (`UCX_TLS` is unchanged), so this selects the NIC, not RDMA.
+
+### NIXL parallelism: `threads` or `processes`
+
+`dimensions.threads` is the number of parallel flows, like `iperf3 -P N`. `execution.nixl.parallelism` chooses how NIXL builds them:
+
+| `parallelism` | What runs for `threads: N` |
+|---|---|
+| `threads` (default) | One nixlbench pair with `--num_threads N`, running the whole block/batch sweep in one go. |
+| `processes` | N nixlbench pairs with one thread each, running together, one (block size, batch size) point at a time. |
+
+With the default UCX transport over TCP, the threads of one nixlbench pair do not add up on the receiving side. The initiator drives one UCX worker per thread, but the target progresses all of its workers from a single thread (`nixlUcxEngine::progress()` loops over them), and that thread also performs the `recv()` copies. The pair is therefore limited by what one core can receive, however many threads the initiator uses. `enable_pt` and `progress_threads` do not change this: `enable_pt` uses one shared thread for all workers, and `progress_threads` only splits large batches on the sending side. With `processes`, each pair has its own ASIO port and its own target process, so the receive work spreads over N cores. Use `threads` to measure NIXL's own multi-threading and `processes` to see how far TCP gets with enough cores; the graph x-axis is `threads` in both cases and the mode is recorded in each `*-command.json`.
+
+```yaml
+dimensions:
+  threads: "1:4"
+execution:
+  nixl:
+    parallelism: processes
+```
+
+In `processes` mode:
+
+- The pods need cores for N processes and memory for N sets of buffers (`resources` applies to the pod, not per process).
+- Each point is a separate nixlbench execution, so `run_timeout_seconds` bounds one point, `warmup_runs` is spent again at every point, and the sweep takes longer than in `threads` mode. A failing point stops the run and the error names it.
+- The result of a point is N times the rate of its slowest process, which is the data all pairs moved divided by the time the slowest took. Adding the processes' own averages would be wrong when they finish at different times, because a fast pair then reports a rate measured while the link was shared and a slow pair one that includes the end of the run when it had the link alone. The aggregate cannot exceed what the link carried. The ratio between the fastest and slowest process is stored as `skew` in each observation (1.0 means they were even; a high value means the aggregate is below the rate the link sustained while all of them ran).
+- Logs are named `<test_id>-t<N>-run<n>-b<block>-n<batch>-p<k>-initiator.log` (and `-target.log`), and `*-command.json` lists them under `points`.
+- `pipeline_depth` is checked against one thread per process.
+
+### NIXL tuning: `args` and `env`
+
+`execution.nixl.args` passes extra flags to `nixlbench`, and `execution.nixl.env` sets environment variables on both `nixlbench` processes (the same values on the initiator and the target). Both are optional, and the values are recorded in each `*-command.json` (`nixl_args`, `nixl_env`).
+
+```yaml
+execution:
+  nixl:
+    args:
+      pipeline_depth: 16       # --pipeline_depth=16
+    env:
+      UCX_ZCOPY_THRESH: 1K
+      UCX_TCP_RX_SEG_SIZE: 128K
+```
+
+Supported `args`: `pipeline_depth` and `large_blk_iter_ftr` (integers, at least 1), `progress_threads` (integer, at least 0), `enable_pt`, `prepared_xfer`, `recreate_xfer`, `reregister_mem`, `use_hugepages`, `enable_vmm` and `check_consistency` (true or false), and `op_type` (`READ` or `WRITE`). Flags the runner computes from the profile (block and batch sizes, threads, iterations, buffer size, runtime and backend) are rejected with a pointer to the profile field that sets them.
+
+`pipeline_depth` has a limit that comes from how `nixlbench` splits its iterations. It runs `runs / threads` iterations per thread, and for blocks above 1 MiB divides that by `large_blk_iter_ftr` (16) again. The same applies to `warmup_runs`. If a thread runs fewer iterations than `pipeline_depth`, `nixlbench` caps the depth and then aborts with "descriptor count ... is not evenly divisible by pipeline depth". The profile is therefore rejected before any pod is created unless, for every thread count in the sweep and for blocks above 1 MiB (when `block_size` goes beyond 1M), both `runs` and `warmup_runs` are at least `pipeline_depth × threads × 16`. For depth 16 and 8 threads that is 2048.
+
+`env` names must be `UCX_*`, `NIXL_*` or `OMP_*` variables in capitals. `UCX_NET_DEVICES` is rejected when a `network` section is set, because the interface names there already set it. List UCX variables with `ucx_info -cf` in the image (it is `/opt/ucx/bin/ucx_info` in the CPU image).
+
+When `env` is set, UCX is asked to report unknown variables, and a run fails if either process logs `unused environment variable: ...`, so a misspelled name cannot silently leave a setting unapplied.
 
 ### Failure handling
 
@@ -283,7 +333,7 @@ Backend-exposed fields are:
 | Backend | Execution fields | Dimensions |
 |---|---|---|
 | iperf3 | `duration_seconds`, `warmup_seconds` | `threads` |
-| nixl | `warmup_runs`, `run_timeout_seconds`, `gpu` | `threads`, `block_size`, `batch_size` |
+| nixl | `warmup_runs`, `run_timeout_seconds`, `gpu`, `parallelism`, `args`, `env` | `threads`, `block_size`, `batch_size` |
 
 Values are validated before Kubernetes resources are created.
 
@@ -370,7 +420,7 @@ Plot block size on a logarithmic axis with base 2:
   --x-log 2
 ```
 
-Supported graph dimensions are declared by each backend and must also be valid profile dimensions. Current dimensions are `threads` for iperf3 and `threads`, `block_size`, and `batch_size` for NIXL. Only `throughput` is supported as the Y metric.
+Supported graph dimensions are declared by each backend. Current dimensions are `threads` for iperf3 and `threads`, `block_size`, and `batch_size` for NIXL. Only `throughput` is supported as the Y metric.
 
 Filters accept numeric values and, for byte dimensions, `K`, `M`, and `G` suffixes:
 
@@ -385,8 +435,20 @@ If a dimension varies but is neither the X axis, a filter, nor a series, graphin
 Default graph path:
 
 ```text
-logs/<name>/graphs/throughput-<x-dimension>.png
+logs/<name>/graphs/throughput-<x-dimension>[__<option>...].png
 ```
+
+With no options the file is `throughput-<x-dimension>.png`. Every option that changes what the graph shows adds a part, joined with `__`, so different plots of one dataset do not overwrite each other:
+
+| Option | Part added |
+|---|---|
+| `--filter NAME=VALUE` | `NAME-VALUE`, sorted by name, so their order does not matter |
+| `--series DIM` | `by-DIM` (several series are joined with `-`) |
+| `--percentile P` | `pP` |
+| `--x-log BASE` | `xlogBASE` |
+| `--max-throughput V` | `maxV` |
+
+For example `--x threads --filter block_size=4M --series batch_size` writes `throughput-threads__block_size-4M__by-batch_size.png`. The same options always give the same name, so re-plotting overwrites only its own earlier graph. Characters other than letters, digits, dots and underscores become `-`, and very long names are shortened with a short hash. `--title` does not affect the name.
 
 Use `--output FILE` to choose another path. Use `--title TEXT` to override the generated title. `--max-throughput VALUE` adds a reference line in Gbit/s, and `--percentile PERCENT` selects a percentile before aggregation where supported.
 

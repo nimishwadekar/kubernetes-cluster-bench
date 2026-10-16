@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -24,6 +22,13 @@ from ...benchmark.network import (
 )
 from ...benchmark.process import terminate_process
 from ...benchmark.resources import apply_resources
+from ...benchmark.utils import (
+    format_eta,
+    is_nonnegative_int,
+    is_positive_int,
+    resource_overrides,
+    utc_timestamp,
+)
 from ...common.console import Colors
 from ...common.types import JsonValue
 
@@ -54,14 +59,14 @@ class Iperf3Runner(BenchmarkRunner):
     def validate(self, config: BenchmarkConfig) -> None:
         parameters = config.parameters
         threads = parameters.get("threads", 1)
-        if not _positive_int(threads):
+        if not is_positive_int(threads):
             raise ValueError("iperf3 threads must be a positive integer")
 
         duration = parameters.get("duration_seconds", 10)
-        if not _positive_int(duration):
+        if not is_positive_int(duration):
             raise ValueError("duration_seconds must be a positive integer")
         warmup = parameters.get("warmup_seconds", 5)
-        if not _nonnegative_int(warmup):
+        if not is_nonnegative_int(warmup):
             raise ValueError("warmup_seconds must be a non-negative integer")
 
         if not self.manifest_template.is_file():
@@ -172,12 +177,12 @@ class Iperf3Runner(BenchmarkRunner):
             "image": config.image,
             "parameters": dict(config.parameters),
             "network": self._network_metadata(config, resources),
-            "resource_overrides": _resource_overrides(config),
+            "resource_overrides": resource_overrides(config),
             "client_command": client_command,
             "server_command": server_command,
             "client_file": client_log.name,
             "server_file": f"../{server_log.name}",
-            "started_at": _utc_timestamp(),
+            "started_at": utc_timestamp(),
         }
         write_json(command_log, command_metadata)
 
@@ -227,7 +232,7 @@ class Iperf3Runner(BenchmarkRunner):
             )
 
         command_metadata["client_status"] = client_status
-        command_metadata["finished_at"] = _utc_timestamp()
+        command_metadata["finished_at"] = utc_timestamp()
         write_json(command_log, command_metadata)
         return output_directory
 
@@ -357,7 +362,7 @@ class Iperf3Runner(BenchmarkRunner):
             if context.completed_runs > 0
             else total_duration * context.total_runs
         )
-        self._report(context, f"Estimated time remaining: {_format_eta(eta_seconds)}")
+        self._report(context, f"Estimated time remaining: {format_eta(eta_seconds)}")
         started = time.monotonic()
         while process.poll() is None:
             elapsed = time.monotonic() - started
@@ -397,33 +402,3 @@ def _print_progress(percent: float, colors: Colors | None = None) -> None:
         end="",
         flush=True,
     )
-
-
-def _format_eta(seconds: float) -> str:
-    remaining = max(0, int(round(seconds)))
-    minutes, seconds = divmod(remaining, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
-
-
-def _resource_overrides(config: BenchmarkConfig) -> dict[str, JsonValue]:
-    return {
-        "requests": dict(config.resources.requests),
-        "limits": dict(config.resources.limits),
-    }
-
-
-def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _positive_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
-
-
-def _nonnegative_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
