@@ -5,7 +5,7 @@
 Current backends:
 
 - **iperf3**: TCP throughput between Kubernetes pods.
-- **NIXLBench**: GPU/CPU buffer-transfer throughput using the NIXLBench image and UCX.
+- **NIXLBench**: GPU/CPU buffer-transfer throughput using the NIXLBench image, over the UCX, LIBFABRIC or Mooncake backend.
 
 Only the `throughput` metric is currently supported.
 
@@ -50,7 +50,7 @@ The Dockerfiles are in [images/](./images/):
 
 - [images/Dockerfile.iperf3](./images/Dockerfile.iperf3): iperf3 runtime image.
 - [images/Dockerfile.nixl-gpu](./images/Dockerfile.nixl-gpu): GPU NIXLBench image (CUDA 13). NIXL and UCX come from the `nixl-cu13` wheel, on a minimal CUDA base image.
-- [images/Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu): CPU-only NIXLBench image built from source on Ubuntu (UCX, NIXL with the UCX plugin, `nixlbench`; about 130 MB). Use it with `execution.nixl.gpu: false`.
+- [images/Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu): CPU-only NIXLBench image built from source on Ubuntu (UCX, libfabric, Mooncake, NIXL with the UCX, LIBFABRIC and Mooncake plugins, `nixlbench`). Use it with `execution.nixl.gpu: false`.
 
 Build the iperf3 image from the repository root:
 
@@ -144,7 +144,7 @@ execution:
     warmup_seconds: 1
 ```
 
-`threads: "1:4"` runs thread counts 1, 2, 3, and 4. iperf3 maps the current thread count to `iperf3 -P N`. `runs` controls repeated framework runs for each thread count. iperf3 uses duration plus warmup; transfer-size mode is not supported.
+`threads: "1:4"` runs thread counts 1, 2, 3, and 4. A range is `start[:end[:step]]`, so `"1:8:2"` is 1, 3, 5 and 7. For exact values, write a comma-separated list (`"1,2,4,8"`) or a YAML list (`[1, 2, 4, 8]`), and the two forms can be mixed in a string (`"1,2:8:2"` is 1, 2, 4, 6 and 8); repeated values run once. iperf3 maps the current thread count to `iperf3 -P N`. `runs` controls repeated framework runs for each thread count. iperf3 uses duration plus warmup; transfer-size mode is not supported.
 
 ### NIXL profile
 
@@ -172,7 +172,9 @@ execution:
     warmup_runs: 10
     run_timeout_seconds: 1800  # optional, default 1800
     gpu: true                  # optional, default true
+    backend: UCX               # optional: UCX (default), LIBFABRIC or Mooncake, see "NIXL backends"
     parallelism: threads       # optional: threads (default) or processes, see "NIXL parallelism"
+    repetitions: 1             # optional: run each thread count this many times, see "NIXL repetitions"
 ```
 
 `gpu: false` removes the `nvidia.com/gpu` request from both pods and replaces `UCX_TLS=tcp,self,cuda_copy` with `tcp,self`, so the pods can run on nodes without GPUs. The data path is DRAM to DRAM either way. Use an image that starts `nixlbench` without a CUDA driver, such as [Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu). The GPU image ([Dockerfile.nixl-gpu](./images/Dockerfile.nixl-gpu)) needs the NVIDIA driver at run time.
@@ -183,7 +185,6 @@ NIXL currently hardcodes these execution settings:
 
 ```text
 runtime: ASIO
-transport/backend: UCX
 initiator memory: DRAM
 target memory: DRAM
 ASIO port: 12345 (each nixlbench pair of a run gets the next port)
@@ -236,6 +237,24 @@ The `NetworkAttachmentDefinition`s must already exist in the cluster (the framew
 
 Backends that do not support `network` reject the section instead of ignoring it. NIXL runs over TCP here (`UCX_TLS` is unchanged), so this selects the NIC, not RDMA.
 
+### NIXL backends: `UCX`, `LIBFABRIC` and `Mooncake`
+
+`execution.nixl.backend` chooses the NIXL plugin that moves the data (`nixlbench --backend`). All three are run over TCP, DRAM to DRAM, and produce the same table, so their results can be plotted side by side.
+
+| `backend` | Notes |
+|---|---|
+| `UCX` (default) | Nothing is added; `network` pins it with `UCX_NET_DEVICES`. |
+| `LIBFABRIC` | Runs on libfabric's TCP provider (`FI_PROVIDER=tcp`). The plugin only completes its connection handshake in a progress thread, so `--enable_pt=true` is always passed and `args.enable_pt: false` is rejected. `network` pins it with `FI_TCP_IFACE`. |
+| `Mooncake` | Forces Mooncake's TCP transport (`MC_FORCE_TCP=1`). `network` makes each side advertise its secondary address (`NIXL_MOONCAKE_IP_ADDR`). `args.enable_pt` and `args.progress_threads` are rejected because the plugin has no progress thread support. Its TCP transport does all of its I/O on `MC_NUM_TCP_IO_THREADS` threads (default 1), which is what limits a single nixlbench pair, so the runner sets it to the thread count (and to 1 in `processes` mode, where each process has one thread); a value in `env` overrides it. The variable exists from Mooncake v0.3.14, which the CPU image builds; older versions ignore it. The values used are recorded as `nixl_env_applied` in `*-command.json`. Mooncake's newer engine, TENT, is built into the CPU image and has an `hp_tcp` transport with its own worker threads and multi-rail routing; it is switched on with `env: {MC_USE_TENT: 1}` and configured with an inline JSON in `MC_TENT_CONF` (see "Environment placeholders" below). With TENT on, the runner does not set `MC_FORCE_TCP`, because that would select the old `tcp` transport. |
+
+The image must contain the plugin: [images/Dockerfile.nixl-cpu](./images/Dockerfile.nixl-cpu) builds all three, while the GPU image only has UCX. A missing plugin makes `nixlbench` fail at start-up and the run is recorded as failed. `env` accepts the chosen backend's own variables besides `NIXL_` and `OMP_` (`UCX_` for UCX, `FI_` for LIBFABRIC, `MC_` for Mooncake), and the defaults above can be overridden there. The variable that pins the network cannot be set while a `network` section is present. The backend is recorded as `nixl_backend` in each `*-command.json`, and `args`, `env` and `parallelism` work as described below for every backend. UCX-specific tuning (for example the variables in the next sections) does not apply to the others.
+
+### NIXL repetitions
+
+`execution.nixl.repetitions` (default `1`) runs the whole sweep of each thread count that many times, one after the other, so a graph point is backed by several samples. `execution.runs` is unrelated: it is the iteration count inside one nixlbench execution. Each repetition is recorded as its own run (`run1`, `run2`, ... in the file names and `*-command.json`), the run summary counts them separately, and a failed repetition does not stop the others. The run time grows in proportion, so a few repetitions of a narrow sweep is usually the better use of time than many of a wide one.
+
+When a graph point has several samples, the plotted value is their mean and the error bars are their sample standard deviation (the bars have zero height with one repetition, because a spread cannot be estimated from one value). Two repetitions give a rough spread, and at least three are needed for it to mean much.
+
 ### NIXL parallelism: `threads` or `processes`
 
 `dimensions.threads` is the number of parallel flows, like `iperf3 -P N`. `execution.nixl.parallelism` chooses how NIXL builds them:
@@ -257,15 +276,15 @@ execution:
 
 In `processes` mode:
 
-- The pods need cores for N processes and memory for N sets of buffers (`resources` applies to the pod, not per process).
+- The pods need cores for N processes and memory for N sets of buffers (`resources` applies to the pod, not per process). Count the busy threads of each process, not just the processes: nixlbench's polling loop always occupies one core, and a backend that adds a progress thread (LIBFABRIC) occupies a second one per process on each side. A CPU limit that is too low throttles the pod, which shows as throughput that falls instead of rising once N passes what the limit allows.
 - Each point is a separate nixlbench execution, so `run_timeout_seconds` bounds one point, `warmup_runs` is spent again at every point, and the sweep takes longer than in `threads` mode. A failing point stops the run and the error names it.
-- The result of a point is N times the rate of its slowest process, which is the data all pairs moved divided by the time the slowest took. Adding the processes' own averages would be wrong when they finish at different times, because a fast pair then reports a rate measured while the link was shared and a slow pair one that includes the end of the run when it had the link alone. The aggregate cannot exceed what the link carried. The ratio between the fastest and slowest process is stored as `skew` in each observation (1.0 means they were even; a high value means the aggregate is below the rate the link sustained while all of them ran).
+- The pairs do not start their timed phases at exactly the same moment, so the processes' own averages cannot simply be added: a pair that ran partly alone reports a rate the link only gave it for that part, and the sum can exceed what the link carries. The runner therefore records when each initiator's result row appeared (`row_seen_s`) and the bytes each pair moved in its timed phase (`timed_bytes`, computed with nixlbench's iteration rules), which places every pair's timed phase on a common clock. The result of a point is the bytes all pairs moved divided by the span from the first start to the last end. It equals the sum of the rates when the pairs ran together, and it is never above N times the slowest pair's rate. Each observation also stores `overlap` (the share of that span in which all pairs were running), `window_s`, `skew` (fastest rate over slowest) and the per-process rates; a low `overlap` means the result is an average over a period in which fewer pairs were transferring. The timing has a resolution of a few tens of milliseconds, so use enough `runs` for each point to last several seconds. Runs recorded without timing (older datasets) fall back to N times the slowest rate, marked `aggregate_method: slowest_rate`, which is only an upper bound.
 - Logs are named `<test_id>-t<N>-run<n>-b<block>-n<batch>-p<k>-initiator.log` (and `-target.log`), and `*-command.json` lists them under `points`.
 - `pipeline_depth` is checked against one thread per process.
 
 ### NIXL tuning: `args` and `env`
 
-`execution.nixl.args` passes extra flags to `nixlbench`, and `execution.nixl.env` sets environment variables on both `nixlbench` processes (the same values on the initiator and the target). Both are optional, and the values are recorded in each `*-command.json` (`nixl_args`, `nixl_env`).
+`execution.nixl.args` passes extra flags to `nixlbench`, and `execution.nixl.env` sets environment variables on both `nixlbench` processes (the same values on the initiator and the target, except for the placeholders in "Environment placeholders"; names must start with the backend's prefix, see "NIXL backends"). Both are optional, and the values are recorded in each `*-command.json` (`nixl_args`, `nixl_env`).
 
 ```yaml
 execution:
@@ -283,7 +302,19 @@ Supported `args`: `pipeline_depth` and `large_blk_iter_ftr` (integers, at least 
 
 `env` names must be `UCX_*`, `NIXL_*` or `OMP_*` variables in capitals. `UCX_NET_DEVICES` is rejected when a `network` section is set, because the interface names there already set it. List UCX variables with `ucx_info -cf` in the image (it is `/opt/ucx/bin/ucx_info` in the CPU image).
 
-When `env` is set, UCX is asked to report unknown variables, and a run fails if either process logs `unused environment variable: ...`, so a misspelled name cannot silently leave a setting unapplied.
+With the UCX backend, when `env` is set, UCX is asked to report unknown variables, and a run fails if either process logs `unused environment variable: ...`, so a misspelled name cannot silently leave a setting unapplied.
+
+### Environment placeholders
+
+In `execution.nixl.env` values, `{threads}` is replaced by the thread count of the run (always 1 in `processes` mode), `{threads*N}` by N times it (for a setting that should scale faster than the thread count, such as connections per peer) and `{address}` by the address of the side that runs the process (its secondary-network address, so it needs a `network` section and is rejected without one). This lets one value describe both sides and every point of the sweep, for example a JSON setting whose worker count follows `threads`:
+
+```yaml
+env:
+  MC_USE_TENT: 1
+  MC_TENT_CONF: '{"transports": {"tcp": {"enable": false}, "rdma": {"enable": false}, "shm": {"enable": false}, "gds": {"enable": false}, "ascend_direct": {"enable": false}, "hp_tcp": {"enable": true, "advertise_address": "{address}", "rail_addresses": ["{address}"], "worker_count": {threads}, "connections_per_peer": {threads}, "max_outstanding_bytes": 68719476736, "max_outstanding_tasks": 32768}}}'
+```
+
+`max_outstanding_bytes` and `max_outstanding_tasks` cap how much `hp_tcp` keeps in flight. With the defaults, sweeps with large blocks, large batches and several threads fail with `No more transports available after hp_tcp failed` and `NIXL_ERR_BACKEND`, so raise them when the in-flight data (roughly block × batch × `pipeline_depth` × threads) is large.
 
 ### Failure handling
 
@@ -333,7 +364,7 @@ Backend-exposed fields are:
 | Backend | Execution fields | Dimensions |
 |---|---|---|
 | iperf3 | `duration_seconds`, `warmup_seconds` | `threads` |
-| nixl | `warmup_runs`, `run_timeout_seconds`, `gpu`, `parallelism`, `args`, `env` | `threads`, `block_size`, `batch_size` |
+| nixl | `warmup_runs`, `run_timeout_seconds`, `gpu`, `backend`, `parallelism`, `repetitions`, `args`, `env` | `threads`, `block_size`, `batch_size` |
 
 Values are validated before Kubernetes resources are created.
 

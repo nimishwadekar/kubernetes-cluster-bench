@@ -1,18 +1,17 @@
 # ============================================================================
 # CPU-only NIXLBench image (no CUDA, no GPU, no vLLM)
 # ============================================================================
-# Builds UCX, NIXL (UCX plugin only) and nixlbench from source on a plain
-# Ubuntu base and ships only the installed results. This is much smaller than
-# the old vLLM-based GPU image, and it runs on
-# nodes without GPUs: use `execution.nixl.gpu: false` in the profile.
+# Builds UCX, libfabric, Mooncake, NIXL (UCX, LIBFABRIC and Mooncake plugins)
+# and nixlbench from source on a plain Ubuntu base and ships only the installed
+# results. This is much smaller than the old vLLM-based GPU image, and it runs
+# on nodes without GPUs: use `execution.nixl.gpu: false` in the profile.
 #
 # Stages (each is independent, so BuildKit caches and parallelizes them):
-#   toolchain -> ucx -> nixl -> nixlbench -> dist -> runtime image
+#   toolchain -> ucx, libfabric, mooncake -> nixl -> nixlbench -> dist -> runtime
 #   nixl-src (git clone) feeds nixl and nixlbench.
 #
-# The data path is DRAM <-> DRAM over UCX 
-# (TCP, plus RDMA if the pod sees a verbs device). 
-# VRAM transfers are not available.
+# The data path is DRAM <-> DRAM; VRAM transfers are not available. The backend
+# is chosen at run time with `execution.nixl.backend` (UCX by default).
 #
 # Build:
 #   docker build -f images/Dockerfile.nixl-cpu \
@@ -78,6 +77,69 @@ RUN set -eux; \
     rm -rf "/tmp/ucx-${UCX_VERSION}"
 
 # ---------------------------------------------------------------------------
+# libfabric, for the NIXL LIBFABRIC plugin (it needs 1.21 or newer, which is
+# newer than the Ubuntu package).
+# ---------------------------------------------------------------------------
+FROM toolchain AS libfabric
+
+ARG LIBFABRIC_VERSION=2.7.0
+
+RUN set -eux; \
+    curl -fsSL "https://github.com/ofiwg/libfabric/releases/download/v${LIBFABRIC_VERSION}/libfabric-${LIBFABRIC_VERSION}.tar.bz2" | tar -xj -C /tmp; \
+    cd "/tmp/libfabric-${LIBFABRIC_VERSION}"; \
+    ./configure --prefix=/opt/libfabric --disable-static; \
+    make -j"$(nproc)"; \
+    make install; \
+    rm -rf "/tmp/libfabric-${LIBFABRIC_VERSION}"
+
+# ---------------------------------------------------------------------------
+# Mooncake Transfer Engine (shared library), for the NIXL Mooncake plugin.
+# Only the transfer engine is built, not the store or the examples. TENT, its
+# newer engine (with the hp_tcp transport), is built in but only used when
+# MC_USE_TENT is set at run time.
+# ---------------------------------------------------------------------------
+FROM toolchain AS mooncake
+
+# v0.3.14 has support for MC_NUM_TCP_IO_THREADS, which sets how many
+# threads run the TCP transport's I/O (1 by default, which caps one pair).
+ARG MOONCAKE_VERSION=v0.3.14-rc1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libboost-all-dev \
+        libcurl4-openssl-dev \
+        libgoogle-glog-dev \
+        libhiredis-dev \
+        libjsoncpp-dev \
+        liburing-dev \
+        libssl-dev \
+        libunwind-dev \
+        libxxhash-dev \
+        libyaml-cpp-dev \
+        libzstd-dev \
+        libzmq3-dev \
+        libmsgpack-cxx-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${MOONCAKE_VERSION}" --recurse-submodules --shallow-submodules https://github.com/kvcache-ai/Mooncake.git /src/mooncake
+
+RUN set -eux; \
+    cmake -S /src/mooncake -B /tmp/mooncake-build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/mooncake \
+        -DBUILD_SHARED_LIBS=ON \
+        -DWITH_TE=ON \
+        -DWITH_STORE=OFF \
+        -DWITH_STORE_RUST=OFF \
+        -DBUILD_UNIT_TESTS=OFF \
+        -DBUILD_EXAMPLES=OFF \
+        -DBUILD_BENCHMARK=OFF \
+        -DUSE_TCP=ON \
+        -DUSE_TENT=ON; \
+    ninja -C /tmp/mooncake-build; \
+    ninja -C /tmp/mooncake-build install
+
+# ---------------------------------------------------------------------------
 # NIXL sources (headers, core and the nixlbench sources live in one repo).
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU_VERSION} AS nixl-src
@@ -93,7 +155,7 @@ RUN apt-get update && \
 RUN git clone --depth 1 --branch "${NIXL_VERSION}" https://github.com/ai-dynamo/nixl.git /src/nixl
 
 # ---------------------------------------------------------------------------
-# NIXL core with the UCX plugin only.
+# NIXL core with the UCX, LIBFABRIC and Mooncake plugins.
 # ---------------------------------------------------------------------------
 FROM toolchain AS nixl
 
@@ -106,6 +168,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=ucx /opt/ucx /opt/ucx
+COPY --from=libfabric /opt/libfabric /opt/libfabric
+COPY --from=mooncake /opt/mooncake/ /usr/local/
 COPY --from=nixl-src /src/nixl /src/nixl
 
 RUN set -eux; \
@@ -114,7 +178,8 @@ RUN set -eux; \
         --buildtype=release \
         -Dlibdir=lib \
         -Ducx_path=/opt/ucx \
-        -Denable_plugins=UCX \
+        -Dlibfabric_path=/opt/libfabric \
+        -Denable_plugins=UCX,LIBFABRIC,MOONCAKE \
         -Dbuild_tests=false \
         -Dbuild_examples=false \
         -Dwith_trace=false; \
@@ -145,11 +210,15 @@ RUN set -eux; \
 FROM toolchain AS dist
 
 COPY --from=ucx /opt/ucx /dist/ucx
+COPY --from=libfabric /opt/libfabric /dist/libfabric
+COPY --from=mooncake /opt/mooncake/lib /dist/mooncake/lib
 COPY --from=nixl /opt/nixl /dist/nixl
 COPY --from=nixlbench /opt/nixlbench /dist/nixlbench
 
 RUN find /dist -type f \( -name '*.so*' -o -path '*/bin/*' \) -exec strip --strip-unneeded {} + 2>/dev/null || true; \
     rm -rf /dist/ucx/share /dist/ucx/include /dist/ucx/lib/pkgconfig /dist/ucx/lib/cmake \
+           /dist/libfabric/share /dist/libfabric/include /dist/libfabric/lib/pkgconfig /dist/libfabric/lib/*.a \
+           /dist/mooncake/lib/*.a /dist/mooncake/lib/cmake /dist/mooncake/lib/pkgconfig \
            /dist/nixl/include /dist/nixl/lib/pkgconfig /dist/nixl/lib/*.a \
            /dist/nixl/lib/python*
 
@@ -166,21 +235,29 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ibverbs-providers \
         iproute2 \
+        libcurl4t64 \
         libgflags2.2 \
+        libgoogle-glog0v6t64 \
         libgomp1 \
+        libhiredis1.1.0 \
         libhwloc15 \
         libibverbs1 \
+        libjsoncpp25 \
+        liburing2 \
         libnuma1 \
         librdmacm1t64 \
-        libtomlplusplus3t64 && \
+        libtomlplusplus3t64 \
+        libyaml-cpp0.8 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=dist /dist/ucx /opt/ucx
+COPY --from=dist /dist/libfabric /opt/libfabric
+COPY --from=dist /dist/mooncake /opt/mooncake
 COPY --from=dist /dist/nixl /opt/nixl
 COPY --from=dist /dist/nixlbench /opt/nixlbench
 
 ENV PATH=/opt/nixlbench/bin:${PATH}
-ENV LD_LIBRARY_PATH=/opt/ucx/lib:/opt/nixl/lib
+ENV LD_LIBRARY_PATH=/opt/ucx/lib:/opt/libfabric/lib:/opt/mooncake/lib:/opt/nixl/lib
 ENV NIXL_PLUGIN_DIR=/opt/nixl/lib/plugins
 
 CMD ["bash"]

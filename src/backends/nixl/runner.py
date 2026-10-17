@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -68,7 +69,7 @@ MANAGED_ARGS = {
     "runtime_type": "fixed to ASIO",
     "asio_address": "derived from the initiator pod",
     "asio_port": "assigned per nixlbench pair",
-    "backend": "fixed to UCX",
+    "backend": "set with execution.nixl.backend",
     "initiator_seg_type": "fixed to DRAM",
     "target_seg_type": "fixed to DRAM",
     "total_buffer_size": "computed from dimensions.block_size/batch_size/threads",
@@ -84,10 +85,33 @@ MANAGED_ARGS = {
 LARGE_BLOCK_SIZE = 1 << 20  # nixlbench reduces iterations for blocks above 1 MiB
 DEFAULT_LARGE_BLK_ITER_FTR = 16
 
-ENV_NAME = re.compile(r"(UCX|NIXL|OMP)_[A-Z0-9_]+")
+# NIXL backends (plugins) the benchmark can drive, over TCP. Their names are the
+# values nixlbench takes for --backend.
+BACKENDS = ("UCX", "LIBFABRIC", "Mooncake")
+DEFAULT_BACKEND = "UCX"
+# Besides NIXL_ and OMP_, each backend's own variables may be set in execution.nixl.env.
+ENV_PREFIX = {"UCX": "UCX", "LIBFABRIC": "FI", "Mooncake": "MC"}
+# Set by default so that the backend stays on TCP even if the pod sees RDMA devices.
+DEFAULT_ENV = {
+    "UCX": {},
+    "LIBFABRIC": {"FI_PROVIDER": "tcp"},
+    "Mooncake": {"MC_FORCE_TCP": "1"},
+}
+# What pins each backend to the network section's interface. Set from the profile.
+NETWORK_MANAGED_ENV = {
+    "UCX": "UCX_NET_DEVICES",
+    "LIBFABRIC": "FI_TCP_IFACE",
+    "Mooncake": "NIXL_MOONCAKE_IP_ADDR",
+}
+MOONCAKE_IO_THREADS = "MC_NUM_TCP_IO_THREADS"
+# The Mooncake plugin has no progress thread support.
+UNSUPPORTED_ARGS = {"Mooncake": ("enable_pt", "progress_threads")}
+# Flags a backend cannot work without. The LIBFABRIC plugin completes its
+# connection handshake in its progress thread, so without --enable_pt the
+# target never answers and the run hangs until the timeout.
+REQUIRED_ARGS: dict[str, dict[str, object]] = {"LIBFABRIC": {"enable_pt": True}}
 UNUSED_UCX_VARIABLE = re.compile(r"unused environment variable: (\S+)")
 WARN_UNUSED = "UCX_WARN_UNUSED_ENV_VARS"
-NETWORK_MANAGED_ENV = "UCX_NET_DEVICES"
 
 
 class NixlRunner(BenchmarkRunner):
@@ -130,8 +154,24 @@ class NixlRunner(BenchmarkRunner):
             raise ValueError(
                 "NIXL parallelism must be one of: " + ", ".join(PARALLELISM_MODES)
             )
-        _validate_args(config.parameters.get("args"))
-        _validate_env(config.parameters.get("env"), network_set=config.network is not None)
+        repetitions = config.parameters.get("repetitions", 1)
+        if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
+            raise ValueError("NIXL repetitions must be a positive integer")
+        backend = _backend(config)
+        if backend not in BACKENDS:
+            raise ValueError("NIXL backend must be one of: " + ", ".join(BACKENDS))
+        if config.network is None:
+            for name, setting in _mapping(config.parameters.get("env"), "env").items():
+                if isinstance(setting, str) and "{address}" in setting:
+                    raise ValueError(
+                        f"NIXL env.{name} uses {{address}}, which needs a network section"
+                    )
+        _validate_args(config.parameters.get("args"), backend=backend)
+        _validate_env(
+            config.parameters.get("env"),
+            network_set=config.network is not None,
+            backend=backend,
+        )
         self._validate_pipeline_depth(config)
 
     def _validate_pipeline_depth(self, config: BenchmarkConfig) -> None:
@@ -182,14 +222,16 @@ class NixlRunner(BenchmarkRunner):
             names = self.resource_names(config)
             roles = {names["initiator_pod"]: "initiator", names["target_pod"]: "target"}
             manifest = apply_secondary_network(manifest, config.network, roles)
-            # UCX would otherwise be free to carry the data over eth0.
-            manifest = set_container_env(
-                manifest,
-                {
-                    pod: {"UCX_NET_DEVICES": config.network.for_role(role).interface}
-                    for pod, role in roles.items()
-                },
-            )
+            if _backend(config) == "UCX":
+                # UCX would otherwise be free to carry the data over eth0. The other
+                # backends are pinned when nixlbench starts (see _environment).
+                manifest = set_container_env(
+                    manifest,
+                    {
+                        pod: {"UCX_NET_DEVICES": config.network.for_role(role).interface}
+                        for pod, role in roles.items()
+                    },
+                )
         if not config.resources.is_empty:
             manifest = apply_resources(manifest, config.resources)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -280,6 +322,8 @@ class NixlRunner(BenchmarkRunner):
         parameters["num_iter"] = config.runs
         parameters["warmup_iter"] = int(parameters["warmup_runs"])
         parameters["parallelism"] = mode
+        backend = str(_backend(config))
+        parameters["backend"] = backend
         block_start = int(parameters["block_size_start"])
         block_max = int(parameters["block_size_max"])
         batch_start = int(parameters["batch_size_start"])
@@ -287,9 +331,14 @@ class NixlRunner(BenchmarkRunner):
         parameters["total_buffer_size"] = _minimum_total_buffer_size(
             threads_per_pair, block_max, batch_max
         )
-        extra_flags = _extra_flags(config.parameters.get("args"))
+        extra_flags = _extra_flags(
+            {**REQUIRED_ARGS.get(backend, {}), **(config.parameters.get("args") or {})}
+        )
         env = config.parameters.get("env")
-        env_prefix = ["env", *_env_assignments(env)] if env else []
+        env_prefixes = {
+            role: _env_prefix(_environment(config, resources, role), warn_unused=backend == "UCX" and bool(env))
+            for role in ("initiator", "target")
+        }
         if mode == "processes":
             sweep = [
                 (block, block, batch, batch)
@@ -318,6 +367,7 @@ class NixlRunner(BenchmarkRunner):
                     end_batch,
                     resources.names["initiator_ip"],
                     asio_port=port,
+                    backend=backend,
                 )
                 files.append({
                     "asio_port": port,
@@ -326,7 +376,22 @@ class NixlRunner(BenchmarkRunner):
                     "args": [*args, *extra_flags],
                 })
                 port += 1
-            points.append({"block_size": end_block, "batch_size": end_batch, "files": files})
+            point: dict[str, JsonValue] = {
+                "block_size": end_block,
+                "batch_size": end_batch,
+                "files": files,
+            }
+            if mode == "processes":
+                point["timed_bytes"] = _timed_bytes(
+                    config.runs,
+                    int((config.parameters.get("args") or {}).get(
+                        "large_blk_iter_ftr", DEFAULT_LARGE_BLK_ITER_FTR
+                    )),
+                    threads_per_pair,
+                    end_block,
+                    end_batch,
+                )
+            points.append(point)
 
         metadata: dict[str, JsonValue] = {
             "backend": self.name,
@@ -342,6 +407,11 @@ class NixlRunner(BenchmarkRunner):
             "resource_overrides": resource_overrides(config),
             "nixl_args": points[0]["files"][0]["args"],  # type: ignore[index]
             "nixl_env": dict(env) if env else {},
+            "nixl_backend": backend,
+            "nixl_env_applied": {
+                role: {name: str(value) for name, value in _environment(config, resources, role).items()}
+                for role in ("initiator", "target")
+            },
             "parallelism": mode,
             "started_at": utc_timestamp(),
         }
@@ -351,6 +421,7 @@ class NixlRunner(BenchmarkRunner):
                 {
                     "block_size": point["block_size"],
                     "batch_size": point["batch_size"],
+                    "timed_bytes": point["timed_bytes"],
                     "files": [
                         {key: entry[key] for key in ("asio_port", "initiator_file", "target_file")}
                         for entry in point["files"]  # type: ignore[union-attr]
@@ -385,14 +456,19 @@ class NixlRunner(BenchmarkRunner):
                     f"NIXL point {number}/{len(points)}: {pairs} process(es){where}",
                 )
             try:
-                statuses = self._run_group(
+                statuses, row_times = self._run_group(
                     config,
                     resources,
                     context,
-                    env_prefix,
+                    env_prefixes,
                     [(entry["args"], log, target) for entry, log, target in zip(files, initiator_logs, target_logs)],
                     run_timeout,
                     config.test_id,
+                    watch_row=(
+                        (int(point["block_size"]), int(point["batch_size"]))  # type: ignore[arg-type]
+                        if mode == "processes"
+                        else None
+                    ),
                 )
             except subprocess.TimeoutExpired:
                 metadata["timed_out"] = True
@@ -401,6 +477,26 @@ class NixlRunner(BenchmarkRunner):
                 raise RuntimeError(
                     f"NIXLBench timed out after {run_timeout}s (run_timeout_seconds){where}"
                 ) from None
+            if mode == "processes":
+                # When each initiator's result appeared, for the aggregate window.
+                for entry, seen in zip(metadata["points"][number - 1]["files"], row_times):  # type: ignore[index]
+                    entry["row_seen_s"] = seen
+            tolerated = _tolerated_target_exits(
+                statuses,
+                initiator_logs,
+                target_logs,
+                _expected_rows(sweep[number - 1]),
+            )
+            if tolerated:
+                for entry in tolerated:
+                    entry["point"] = where.strip() or "whole sweep"
+                metadata.setdefault("tolerated_target_exits", []).extend(tolerated)  # type: ignore[union-attr]
+                self._report(
+                    context,
+                    f"warning: {len(tolerated)} target(s) failed at shutdown after their "
+                    f"initiator finished; the results are complete{where}",
+                )
+                statuses = {name: 0 for name in statuses}
             if any(status != 0 for status in statuses.values()):
                 initiator_failure = next(
                     (s for n, s in statuses.items() if n.startswith("initiator") and s != 0), 0
@@ -421,7 +517,7 @@ class NixlRunner(BenchmarkRunner):
         metadata["target_status"] = 0
         metadata["finished_at"] = utc_timestamp()
         write_json(command_log, metadata)
-        if env:
+        if env and backend == "UCX":
             unknown = _unknown_variables(
                 *(log.read_text(encoding="utf-8", errors="replace") for log in logs)
             )
@@ -437,26 +533,33 @@ class NixlRunner(BenchmarkRunner):
         config: BenchmarkConfig,
         resources: BackendResources,
         context: RunContext | None,
-        env_prefix: list[str],
+        env_prefixes: Mapping[str, Sequence[str]],
         jobs: Sequence[tuple[Sequence[str], Path, Path]],
         run_timeout: int,
         process_key: str,
-    ) -> dict[str, int]:
+        watch_row: tuple[int, int] | None = None,
+    ) -> tuple[dict[str, int], list[float | None]]:
         """Run one or more nixlbench pairs side by side and wait for all of them.
 
         Each job is (nixlbench arguments, initiator log, target log). The
         initiators start first and must be ready before any target connects.
         Raises subprocess.TimeoutExpired, after stopping everything, if the
         pairs run longer than ``run_timeout``.
+
+        Returns the exit statuses and, for each job, the seconds after the
+        initiators were started at which its initiator log first showed the
+        ``watch_row`` (block size, batch size) result row, or None.
         """
 
         started = self._processes.setdefault(process_key, [])
+        group_started = time.monotonic()
+        watcher = _RowWatcher([log for _, log, _ in jobs], watch_row, group_started)
         initiators = []
         for args, initiator_log, _ in jobs:
             process = self.kubectl.start_exec(
                 config.namespace,
                 resources.names["initiator_pod"],
-                [*env_prefix, "nixlbench", *args],
+                [*env_prefixes["initiator"], "nixlbench", *args],
                 initiator_log,
             )
             started.append(process)
@@ -472,7 +575,7 @@ class NixlRunner(BenchmarkRunner):
             process = self.kubectl.start_exec(
                 config.namespace,
                 resources.names["target_pod"],
-                [*env_prefix, "nixlbench", *args],
+                [*env_prefixes["target"], "nixlbench", *args],
                 target_log,
             )
             started.append(process)
@@ -482,12 +585,16 @@ class NixlRunner(BenchmarkRunner):
             label = f" {index}" if len(jobs) > 1 else ""
             names[f"initiator{label}"] = initiator
             names[f"target{label}"] = target
+        watcher.start()
         try:
-            return _wait_for_all(names, run_timeout)
+            statuses = _wait_for_all(names, run_timeout)
         except subprocess.TimeoutExpired:
             for process in reversed(started):
                 terminate_process(process)
             raise
+        finally:
+            watcher.stop()
+        return statuses, watcher.times
 
     def cleanup(
         self,
@@ -537,12 +644,13 @@ class NixlRunner(BenchmarkRunner):
         batch_size_max: int,
         initiator_ip: str,
         asio_port: int = ASIO_BASE_PORT,
+        backend: str = DEFAULT_BACKEND,
     ) -> list[str]:
         return [
             "--runtime_type", "ASIO",
             "--asio_address", initiator_ip,
             "--asio_port", str(asio_port),
-            "--backend", "UCX",
+            "--backend", backend,
             "--initiator_seg_type", "DRAM",
             "--target_seg_type", "DRAM",
             "--total_buffer_size", str(total_buffer_size),
@@ -564,7 +672,11 @@ class NixlRunner(BenchmarkRunner):
         deadline = time.monotonic() + config.timeout_seconds
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise RuntimeError("NIXL initiator exited before becoming ready")
+                reason = _first_error_line(log_path)
+                raise RuntimeError(
+                    "NIXL initiator exited before becoming ready"
+                    + (f": {reason}" if reason else "")
+                )
             try:
                 text = log_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -598,6 +710,76 @@ class NixlRunner(BenchmarkRunner):
             context.report(text)
         else:
             print(text)
+
+
+def _backend(config: BenchmarkConfig) -> object:
+    return config.parameters.get("backend", DEFAULT_BACKEND)
+
+
+def _environment(
+    config: BenchmarkConfig,
+    resources: BackendResources,
+    role: str,
+) -> dict[str, object]:
+    """Variables to set for one side's nixlbench, besides the pod's own.
+
+    The backend's TCP defaults come first so the profile's ``env`` can override
+    them, and the network pin goes last because the profile may not set it.
+    """
+
+    backend = str(_backend(config))
+    user_env = config.parameters.get("env") or {}
+    threads = 1 if _parallelism(config) == "processes" else int(config.parameters.get("threads", 1))
+    values: dict[str, object] = dict(DEFAULT_ENV[backend])
+    if backend == "Mooncake":
+        # Its TCP transport does all of its I/O on this many threads (default 1), so
+        # tie it to the thread count: otherwise every thread count is capped alike.
+        values[MOONCAKE_IO_THREADS] = str(threads)
+        if _is_enabled(user_env.get("MC_USE_TENT")):
+            # With TENT the transports come from MC_TENT_CONF, and MC_FORCE_TCP would
+            # select the old `tcp` transport and switch hp_tcp off.
+            values.pop("MC_FORCE_TCP", None)
+    address = resources.names.get(f"{role}_address")
+    for name, setting in user_env.items():
+        values[name] = _fill_placeholders(name, setting, threads, address)
+    if config.network is not None:
+        if backend == "LIBFABRIC":
+            values[NETWORK_MANAGED_ENV[backend]] = config.network.for_role(role).interface
+        elif backend == "Mooncake":
+            # The plugin advertises one local address, the first it finds unless told.
+            if address:
+                values[NETWORK_MANAGED_ENV[backend]] = address
+    return values
+
+
+def _is_enabled(value: object) -> bool:
+    return str(value).lower() not in ("", "0", "false", "n", "no", "off", "none")
+
+
+_THREADS_PLACEHOLDER = re.compile(r"\{threads(?:\*(\d+))?\}")
+
+
+def _fill_placeholders(name: str, value: object, threads: int, address: str | None) -> object:
+    """Replace ``{threads}``, ``{threads*N}`` and ``{address}`` in an env value.
+
+    ``{threads}`` is the thread count of the run (1 in processes mode),
+    ``{threads*N}`` is N times it, for a setting that should scale faster than
+    the thread count (such as connections per peer), and ``{address}`` is this
+    side's secondary-network address, so one value can describe both sides and
+    every point of the sweep.
+    """
+
+    if not isinstance(value, str):
+        return value
+    if "{address}" in value:
+        if not address:
+            raise ValueError(
+                f"NIXL env.{name} uses {{address}}, which needs a network section"
+            )
+        value = value.replace("{address}", address)
+    return _THREADS_PLACEHOLDER.sub(
+        lambda match: str(threads * int(match.group(1) or 1)), value
+    )
 
 
 def _parallelism(config: BenchmarkConfig) -> object:
@@ -682,6 +864,136 @@ def _wait_for_all(
     return {name: statuses[name] for name in processes}
 
 
+# nixlbench's two sides close an ASIO connection when they finish. If the initiator
+# exits first, a target that is still reading the final synchronization message
+# aborts with this error although every transfer has completed.
+TEARDOWN_ERRORS = ("ASIO Read head failed: End of file",)
+
+
+def _expected_rows(step: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+    """The (block size, batch size) rows an execution of this sweep step reports."""
+
+    start_block, end_block, start_batch, end_batch = step
+    return [
+        (block, batch)
+        for block in _powers_of_two(start_block, end_block)
+        for batch in _powers_of_two(start_batch, end_batch)
+    ]
+
+
+def _tolerated_target_exits(
+    statuses: Mapping[str, int],
+    initiator_logs: Sequence[Path],
+    target_logs: Sequence[Path],
+    expected_rows: Sequence[tuple[int, int]],
+) -> list[dict[str, JsonValue]]:
+    """Return the target failures that are only a shutdown race, or [] otherwise.
+
+    A target failure is tolerated when its initiator exited successfully with
+    every expected table row in its log, and the target's error is the known
+    teardown one. Anything else, including a failing initiator, is a real
+    failure and nothing is tolerated for the execution.
+    """
+
+    failed = {name: status for name, status in statuses.items() if status != 0}
+    if not failed or any(not name.startswith("target") for name in failed):
+        return []
+    tolerated: list[dict[str, JsonValue]] = []
+    for index, (initiator_log, target_log) in enumerate(zip(initiator_logs, target_logs)):
+        label = f" {index + 1}" if len(initiator_logs) > 1 else ""
+        status = failed.get(f"target{label}")
+        if status is None:
+            continue
+        target_text = target_log.read_text(encoding="utf-8", errors="replace")
+        initiator_text = initiator_log.read_text(encoding="utf-8", errors="replace")
+        if not any(error in target_text for error in TEARDOWN_ERRORS):
+            return []
+        if not all(_has_row(initiator_text, block, batch) for block, batch in expected_rows):
+            return []
+        tolerated.append({"process": f"target{label}".strip(), "status": status, "log": target_log.name})
+    return tolerated
+
+
+def _has_row(text: str, block_size: int, batch_size: int) -> bool:
+    return (
+        re.search(rf"^\s*{block_size}\s+{batch_size}\s+[0-9]+(?:\.[0-9]+)?(?:\s|$)", text, re.MULTILINE)
+        is not None
+    )
+
+
+def _timed_bytes(
+    runs: int,
+    large_blk_iter_ftr: int,
+    threads: int,
+    block_size: int,
+    batch_size: int,
+) -> int:
+    """Bytes one nixlbench execution moves in its timed phase for a single sweep row.
+
+    Mirrors nixlbench: num_iter is rounded up to a multiple of threads times
+    large_blk_iter_ftr and, for blocks above 1 MiB, divided by the factor.
+    """
+
+    iterations = _round_up(runs, threads * large_blk_iter_ftr)
+    if block_size > LARGE_BLOCK_SIZE:
+        iterations //= large_blk_iter_ftr
+    return iterations * block_size * batch_size
+
+
+class _RowWatcher:
+    """Notes when each initiator log first shows a result row.
+
+    The row is printed when the timed phase has finished, so together with the
+    bytes moved it gives when each pair's timed phase started and ended.
+    """
+
+    INTERVAL = 0.02
+
+    def __init__(self, logs: Sequence[Path], row: tuple[int, int] | None, origin: float) -> None:
+        self.times: list[float | None] = [None] * len(logs)
+        self._logs = logs
+        self._row = row
+        self._origin = origin
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        if self._row is not None:
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join()
+        self._scan()  # a row printed just before the processes exited
+
+    def _scan(self) -> None:
+        if self._row is None:
+            return
+        now = time.monotonic()
+        for index, log in enumerate(self._logs):
+            if self.times[index] is not None:
+                continue
+            try:
+                text = log.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _has_row(text, *self._row):
+                self.times[index] = now - self._origin
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._scan()
+            if all(seen is not None for seen in self.times):
+                return
+            self._stop.wait(self.INTERVAL)
+
+
+# Lines that report a failure: nixlbench's own errors, glog errors (E<date> ...),
+# NIXL API failures and an uncaught C++ exception.
+ERROR_LINE = re.compile(r"(Error|E\d{4} \d|NIXL: .*failed|terminate called|what\(\):)")
+
+
 def _first_error_line(*paths: Path) -> str:
     """Return the first line a log reports as an error, if any."""
 
@@ -691,7 +1003,7 @@ def _first_error_line(*paths: Path) -> str:
         except OSError:
             continue
         for line in text.splitlines():
-            if line.lstrip().startswith("Error"):
+            if ERROR_LINE.match(line.lstrip()):
                 return line.strip()[:300]
     return ""
 
@@ -704,10 +1016,15 @@ def _mapping(value: object, name: str) -> Mapping[str, object]:
     return value
 
 
-def _validate_args(value: object) -> None:
+def _validate_args(value: object, backend: str = DEFAULT_BACKEND) -> None:
     for name, setting in _mapping(value, "args").items():
         if name in MANAGED_ARGS:
             raise ValueError(f"NIXL args.{name} is managed by the profile: {MANAGED_ARGS[name]}")
+        if name in UNSUPPORTED_ARGS.get(backend, ()):
+            raise ValueError(f"NIXL args.{name} is not supported by the {backend} backend")
+        required = REQUIRED_ARGS.get(backend, {})
+        if name in required and setting != required[name]:
+            raise ValueError(f"NIXL args.{name} must be {str(required[name]).lower()} for the {backend} backend")
         if name in INT_ARGS:
             minimum = INT_ARGS[name]
             if isinstance(setting, bool) or not isinstance(setting, int) or setting < minimum:
@@ -727,13 +1044,20 @@ def _validate_args(value: object) -> None:
             )
 
 
-def _validate_env(value: object, *, network_set: bool) -> None:
+def _validate_env(
+    value: object,
+    *,
+    network_set: bool,
+    backend: str = DEFAULT_BACKEND,
+) -> None:
+    prefix = ENV_PREFIX.get(backend, "UCX")
+    name_pattern = re.compile(rf"({prefix}|NIXL|OMP)_[A-Z0-9_]+")
     for name, setting in _mapping(value, "env").items():
-        if ENV_NAME.fullmatch(str(name)) is None:
+        if name_pattern.fullmatch(str(name)) is None:
             raise ValueError(
-                f"NIXL env.{name} must be a UCX_, NIXL_ or OMP_ variable name in capitals"
+                f"NIXL env.{name} must be a {prefix}_, NIXL_ or OMP_ variable name in capitals"
             )
-        if name == NETWORK_MANAGED_ENV and network_set:
+        if name == NETWORK_MANAGED_ENV.get(backend) and network_set:
             raise ValueError(
                 f"NIXL env.{name} is managed by the network section (network.*.interface)"
             )
@@ -805,7 +1129,18 @@ def _extra_flags(args: Mapping[str, object] | None) -> list[str]:
     return flags
 
 
-def _env_assignments(env: Mapping[str, object] | None) -> list[str]:
+def _env_prefix(env: Mapping[str, object], *, warn_unused: bool) -> list[str]:
+    """Return the ``env NAME=value ...`` command prefix, or nothing for no variables."""
+
+    assignments = _env_assignments(env, warn_unused=warn_unused)
+    return ["env", *assignments] if assignments else []
+
+
+def _env_assignments(
+    env: Mapping[str, object] | None,
+    *,
+    warn_unused: bool = True,
+) -> list[str]:
     """Return ``NAME=value`` items for ``env``; empty when nothing is configured.
 
     UCX is told to report unknown variables so that a typo cannot silently
@@ -814,7 +1149,7 @@ def _env_assignments(env: Mapping[str, object] | None) -> list[str]:
 
     if not env:
         return []
-    values = {WARN_UNUSED: "y", **env}
+    values = {WARN_UNUSED: "y", **env} if warn_unused else dict(env)
     return [
         f"{name}={('y' if setting else 'n') if isinstance(setting, bool) else setting}"
         for name, setting in values.items()

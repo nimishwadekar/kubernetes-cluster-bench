@@ -362,8 +362,12 @@ def _parse_dimension_number(value: str, name: str) -> int:
 def _profile_thread_spec(value: object) -> str:
     if value is None:
         return "1"
+    if isinstance(value, list):
+        if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+            raise ValueError("profile field 'threads' lists must contain integers")
+        value = ",".join(str(item) for item in value)
     if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise ValueError("profile field 'threads' must be a string or integer")
+        raise ValueError("profile field 'threads' must be a string, integer or list of integers")
     text = str(value)
     if not text:
         raise ValueError("profile field 'threads' must not be empty")

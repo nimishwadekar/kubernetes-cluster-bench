@@ -43,11 +43,7 @@ def run_benchmark(
     runner.validate(config)
 
     thread_values = _thread_values(config.parameters)
-    run_numbers = (
-        tuple(range(1, config.runs + 1))
-        if plugin.framework_repeats
-        else (1,)
-    )
+    run_numbers = tuple(range(1, _repeat_count(config, plugin.framework_repeats) + 1))
     total_runs = len(thread_values) * len(run_numbers)
     test_directory, raw_root = create_test_directory(
         config.log_directory,
@@ -150,6 +146,13 @@ def run_benchmark(
         planned_runs=total_runs,
         aborted_reason=aborted_reason,
     )
+
+
+def _repeat_count(config: BenchmarkConfig, framework_repeats: bool) -> int:
+    if framework_repeats:
+        return config.runs
+    repetitions = config.parameters.get("repetitions", 1)
+    return repetitions if isinstance(repetitions, int) and not isinstance(repetitions, bool) else 1
 
 
 def _thread_values(parameters: Mapping[str, object]) -> tuple[int, ...]:

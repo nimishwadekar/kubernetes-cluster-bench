@@ -15,6 +15,7 @@ from src.backends.nixl.runner import (
     _extra_flags,
     _minimum_total_buffer_size,
     _powers_of_two,
+    _timed_bytes,
     _unknown_variables,
     _validate_args,
     _validate_env,
@@ -303,7 +304,7 @@ class NixlRunnerTests(unittest.TestCase):
                 replace(config, parameters={**config.parameters, "parallelism": value})
             )
 
-    def execute_processes(self, threads: int, fail_on_call: int | None = None):
+    def execute_processes(self, threads: int, fail_on_call: int | None = None, with_rows: bool = False):
         import src.backends.nixl.runner as runner_module
 
         commands = []
@@ -312,7 +313,12 @@ class NixlRunnerTests(unittest.TestCase):
                 return 1
 
         def start_exec(namespace, pod, command, path):
-            path.write_text("Using address 10.0.0.1 port 12345\n", encoding="utf-8")
+            text = "Using address 10.0.0.1 port 12345\n"
+            if with_rows and pod == "server":
+                block = int(command[command.index("--max_block_size") + 1])
+                batch = int(command[command.index("--max_batch_size") + 1])
+                text += f"{block:<20}{batch:<15}2.448327       428.3\n"
+            path.write_text(text, encoding="utf-8")
             commands.append((pod, command, path.name))
             return Failing() if fail_on_call == len(commands) else FakeProcess()
 
@@ -406,10 +412,342 @@ class NixlRunnerTests(unittest.TestCase):
             replace(config, parameters={**config.parameters, "parallelism": "processes"})
         )
 
+    def test_timed_bytes_follow_nixlbench_iteration_rules(self) -> None:
+        mib = 1 << 20
+        # Blocks up to 1 MiB run all (rounded up) iterations, larger ones a sixteenth.
+        self.assertEqual(_timed_bytes(12800, 16, 1, mib, 2), 12800 * mib * 2)
+        self.assertEqual(_timed_bytes(12800, 16, 1, 2 * mib, 1), 800 * 2 * mib)
+        self.assertEqual(_timed_bytes(100, 16, 1, mib, 1), 112 * mib)  # rounded up to 16
+        self.assertEqual(_timed_bytes(100, 16, 2, mib, 1), 128 * mib)  # to 2 x 16
+        self.assertEqual(_timed_bytes(12800, 8, 1, 4 * mib, 1), 1600 * 4 * mib)
+
+    def test_points_record_timed_bytes_and_when_each_result_appeared(self) -> None:
+        commands, metadata, error = self.execute_processes(2, with_rows=True)
+        self.assertIsNone(error)
+        mib = 1 << 20
+        first = metadata["points"][0]
+        self.assertEqual(first["timed_bytes"], _timed_bytes(3, 16, 1, 4 * mib, 1))
+        seen = [entry["row_seen_s"] for entry in first["files"]]
+        self.assertTrue(all(isinstance(value, float) and value >= 0 for value in seen))
+        # Threads mode needs none of this.
+        _, threads_metadata = self.execute_with({})
+        self.assertNotIn("points", threads_metadata)
+
     def test_sweep_points_double_like_nixlbench(self) -> None:
         self.assertEqual(_powers_of_two(1, 8), [1, 2, 4, 8])
         self.assertEqual(_powers_of_two(256 << 10, 1 << 20), [256 << 10, 512 << 10, 1 << 20])
         self.assertEqual(_powers_of_two(4, 4), [4])
+
+    def test_validation_checks_repetitions(self) -> None:
+        config = self.config()
+        for value in (0, -1, True, "2", 1.5):
+            with self.assertRaisesRegex(ValueError, "repetitions must be a positive integer"):
+                NixlRunner().validate(
+                    replace(config, parameters={**config.parameters, "repetitions": value})
+                )
+        NixlRunner().validate(replace(config, parameters={**config.parameters, "repetitions": 3}))
+
+    def test_validation_checks_the_backend(self) -> None:
+        config = self.config()
+        for value in ("ucx", "GDS", "", True):
+            with self.assertRaisesRegex(ValueError, "backend must be one of"):
+                NixlRunner().validate(
+                    replace(config, parameters={**config.parameters, "backend": value})
+                )
+        for value in ("UCX", "LIBFABRIC", "Mooncake"):
+            NixlRunner().validate(
+                replace(config, parameters={**config.parameters, "backend": value})
+            )
+
+    def test_mooncake_rejects_progress_thread_args(self) -> None:
+        for name, value in (("enable_pt", True), ("progress_threads", 2)):
+            with self.assertRaisesRegex(ValueError, "not supported by the Mooncake"):
+                _validate_args({name: value}, backend="Mooncake")
+        _validate_args({"enable_pt": True, "progress_threads": 2}, backend="LIBFABRIC")
+
+    def test_env_names_follow_the_backend(self) -> None:
+        _validate_env({"FI_TCP_IFACE": "x", "NIXL_FOO": 1}, network_set=False, backend="LIBFABRIC")
+        _validate_env({"MC_FORCE_TCP": 1}, network_set=False, backend="Mooncake")
+        with self.assertRaisesRegex(ValueError, "FI_, NIXL_ or OMP_"):
+            _validate_env({"UCX_TLS": "tcp"}, network_set=False, backend="LIBFABRIC")
+        with self.assertRaisesRegex(ValueError, "MC_, NIXL_ or OMP_"):
+            _validate_env({"FI_PROVIDER": "tcp"}, network_set=False, backend="Mooncake")
+
+    def test_network_variables_are_managed_per_backend(self) -> None:
+        for backend, name in (
+            ("UCX", "UCX_NET_DEVICES"),
+            ("LIBFABRIC", "FI_TCP_IFACE"),
+            ("Mooncake", "NIXL_MOONCAKE_IP_ADDR"),
+        ):
+            _validate_env({name: "x"}, network_set=False, backend=backend)
+            with self.assertRaisesRegex(ValueError, "managed by the network section"):
+                _validate_env({name: "x"}, network_set=True, backend=backend)
+        # Another backend's pin is not managed (and not even a valid name).
+        _validate_env({"NIXL_MOONCAKE_IP_ADDR": "x"}, network_set=True, backend="LIBFABRIC")
+
+    def execute_backend(self, backend, *, network=False, env=None, args=None):
+        commands = {}
+        def start_exec(namespace, pod, command, path):
+            commands[pod] = list(command)
+            path.write_text("Using address 10.0.0.1 port 12345\n", encoding="utf-8")
+            return FakeProcess()
+        runner = NixlRunner(kubectl=Mock())
+        runner.kubectl.start_exec.side_effect = start_exec
+        names = {"initiator_pod": "server", "target_pod": "client", "initiator_ip": "10.0.0.1"}
+        if network:
+            names.update(initiator_address="10.77.0.35", target_address="10.77.0.36")
+        parameters = {**self.config().parameters, "backend": backend}
+        if env is not None:
+            parameters["env"] = env
+        if args is not None:
+            parameters["args"] = args
+        config = replace(self.config(), parameters=parameters, network=self.network() if network else None)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "raw" / "t1"
+            try:
+                runner.execute(config, BackendResources(names=names), output)
+            finally:
+                metadata = json.loads(next(output.glob("*-command.json")).read_text(encoding="utf-8"))
+        return commands, metadata
+
+    def test_default_backend_is_ucx_and_unchanged(self) -> None:
+        commands, metadata = self.execute_with({})
+        self.assertEqual(self.flag(commands["server"], "--backend"), "UCX")
+        self.assertEqual(commands["server"][0], "nixlbench")
+        self.assertEqual(metadata["nixl_backend"], "UCX")
+
+    def test_libfabric_runs_on_tcp_and_is_pinned_to_the_interface(self) -> None:
+        commands, metadata = self.execute_backend("LIBFABRIC", network=True)
+        for pod, interface in (("server", "net1"), ("client", "net2")):
+            command = commands[pod]
+            self.assertEqual(command[:3], ["env", "FI_PROVIDER=tcp", f"FI_TCP_IFACE={interface}"])
+            self.assertEqual(command[3], "nixlbench")
+            self.assertEqual(self.flag(command, "--backend"), "LIBFABRIC")
+            self.assertFalse(any(part.startswith("UCX_") for part in command))
+        self.assertEqual(metadata["nixl_backend"], "LIBFABRIC")
+        self.assertEqual(metadata["parameters"]["backend"], "LIBFABRIC")
+
+    def test_libfabric_always_runs_with_a_progress_thread(self) -> None:
+        commands, metadata = self.execute_backend("LIBFABRIC", args={"pipeline_depth": 2})
+        self.assertIn("--enable_pt=true", commands["server"])
+        self.assertIn("--pipeline_depth=2", commands["server"])
+        self.assertEqual(commands["server"], commands["client"])
+        self.assertIn("--enable_pt=true", metadata["nixl_args"])
+        _validate_args({"enable_pt": True}, backend="LIBFABRIC")
+        with self.assertRaisesRegex(ValueError, "enable_pt must be true for the LIBFABRIC"):
+            _validate_args({"enable_pt": False}, backend="LIBFABRIC")
+        commands, _ = self.execute_backend("UCX")
+        self.assertNotIn("--enable_pt=true", commands["server"])
+
+    def test_libfabric_without_network_only_forces_tcp(self) -> None:
+        commands, _ = self.execute_backend("LIBFABRIC")
+        self.assertEqual(commands["server"][:3], ["env", "FI_PROVIDER=tcp", "nixlbench"])
+
+    def test_mooncake_forces_tcp_and_advertises_each_sides_address(self) -> None:
+        commands, _ = self.execute_backend("Mooncake", network=True)
+        self.assertEqual(
+            commands["server"][:5],
+            ["env", "MC_FORCE_TCP=1", "MC_NUM_TCP_IO_THREADS=2", "NIXL_MOONCAKE_IP_ADDR=10.77.0.35", "nixlbench"],
+        )
+        self.assertEqual(
+            commands["client"][:5],
+            ["env", "MC_FORCE_TCP=1", "MC_NUM_TCP_IO_THREADS=2", "NIXL_MOONCAKE_IP_ADDR=10.77.0.36", "nixlbench"],
+        )
+        self.assertEqual(self.flag(commands["server"], "--backend"), "Mooncake")
+
+    def test_mooncake_io_threads_follow_the_thread_count(self) -> None:
+        commands, metadata = self.execute_backend("Mooncake")  # config() runs 2 threads
+        self.assertIn("MC_NUM_TCP_IO_THREADS=2", commands["server"])
+        self.assertEqual(metadata["nixl_env_applied"]["target"]["MC_NUM_TCP_IO_THREADS"], "2")
+        commands, _ = self.execute_backend("Mooncake", env={"MC_NUM_TCP_IO_THREADS": 6})
+        self.assertIn("MC_NUM_TCP_IO_THREADS=6", commands["server"])
+        self.assertNotIn("MC_NUM_TCP_IO_THREADS=2", commands["server"])
+        # Other backends do not get it, and processes mode runs one thread per process.
+        commands, _ = self.execute_backend("LIBFABRIC")
+        self.assertFalse(any("MC_NUM" in part for part in commands["server"]))
+        from src.backends.nixl.runner import _environment
+
+        config = self.config()
+        config = replace(config, parameters={
+            **config.parameters, "backend": "Mooncake", "threads": 5, "parallelism": "processes",
+        })
+        resources = BackendResources(names={})
+        self.assertEqual(_environment(config, resources, "target")["MC_NUM_TCP_IO_THREADS"], "1")
+        config = replace(config, parameters={**config.parameters, "parallelism": "threads"})
+        self.assertEqual(_environment(config, resources, "target")["MC_NUM_TCP_IO_THREADS"], "5")
+
+    def test_env_placeholders_follow_the_run_and_the_side(self) -> None:
+        env = {"MC_TENT_CONF": '{"w": {threads}, "a": "{address}"}'}
+        commands, metadata = self.execute_backend("Mooncake", network=True, env=env)
+        self.assertIn('MC_TENT_CONF={"w": 2, "a": "10.77.0.35"}', commands["server"])
+        self.assertIn('MC_TENT_CONF={"w": 2, "a": "10.77.0.36"}', commands["client"])
+        self.assertEqual(
+            metadata["nixl_env_applied"]["target"]["MC_TENT_CONF"], '{"w": 2, "a": "10.77.0.36"}'
+        )
+
+    def test_threads_placeholder_takes_a_multiplier(self) -> None:
+        env = {"MC_TENT_CONF": '{"w": {threads}, "c": {threads*3}}'}
+        commands, metadata = self.execute_backend("Mooncake", network=True, env=env)
+        self.assertIn('MC_TENT_CONF={"w": 2, "c": 6}', commands["server"])
+        self.assertEqual(
+            metadata["nixl_env_applied"]["target"]["MC_TENT_CONF"], '{"w": 2, "c": 6}'
+        )
+
+    def test_address_placeholder_needs_a_network(self) -> None:
+        config = self.config()
+        with self.assertRaisesRegex(ValueError, r"uses \{address\}, which needs a network"):
+            NixlRunner().validate(replace(config, parameters={
+                **config.parameters, "backend": "Mooncake", "env": {"MC_TENT_CONF": "{address}"},
+            }))
+
+    def test_tent_replaces_the_forced_tcp_default(self) -> None:
+        commands, _ = self.execute_backend("Mooncake", env={"MC_USE_TENT": 1})
+        self.assertIn("MC_USE_TENT=1", commands["server"])
+        self.assertFalse(any(part.startswith("MC_FORCE_TCP") for part in commands["server"]))
+        commands, _ = self.execute_backend("Mooncake", env={"MC_USE_TENT": 0})
+        self.assertIn("MC_FORCE_TCP=1", commands["server"])
+
+    def test_profile_env_overrides_the_backend_defaults(self) -> None:
+        commands, _ = self.execute_backend("LIBFABRIC", env={"FI_PROVIDER": "sockets", "FI_LOG_LEVEL": "warn"})
+        self.assertIn("FI_PROVIDER=sockets", commands["server"])
+        self.assertNotIn("FI_PROVIDER=tcp", commands["server"])
+        self.assertIn("FI_LOG_LEVEL=warn", commands["server"])
+        self.assertFalse(any("UCX_WARN_UNUSED_ENV_VARS" in part for part in commands["server"]))
+
+    def test_other_backends_do_not_get_the_ucx_device_pin(self) -> None:
+        import yaml
+
+        config = replace(
+            self.config(), network=self.network(),
+            parameters={**self.config().parameters, "backend": "LIBFABRIC"},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "manifest.yaml"
+            NixlRunner().render_manifest(config, destination)
+            self.assertNotIn("UCX_NET_DEVICES", destination.read_text(encoding="utf-8"))
+
+    def execute_teardown(self, *, rows: bool = True, error: str = "ASIO Read head failed: End of file",
+                         initiator_status: int = 0, threads: int = 3, failing: int = 2):
+        """A processes run where target `failing` (1-based) of the first point exits 134."""
+
+        import src.backends.nixl.runner as runner_module
+
+        class Exit(FakeProcess):
+            def __init__(self, status):
+                super().__init__()
+                self.code = status
+
+            def wait(self, timeout=None):
+                return self.code
+
+        calls = []
+        def start_exec(namespace, pod, command, path):
+            calls.append(pod)
+            block = int(command[command.index("--max_block_size") + 1])
+            batch = int(command[command.index("--max_batch_size") + 1])
+            if pod == "server":
+                text = "Using address 10.0.0.1 port 12345\n"
+                if rows:
+                    text += f"{block:<20}{batch:<15}2.448327       428.3\n"
+                path.write_text(text, encoding="utf-8")
+                return Exit(initiator_status if len(calls) == 1 else 0)
+            path.write_text("ready\nterminate called\n  what():  " + error + "\n", encoding="utf-8")
+            first_targets = [i for i, pod_ in enumerate(calls) if pod_ == "client"]
+            is_failing = len(first_targets) == failing and len(calls) <= 2 * threads
+            return Exit(134 if is_failing else 0)
+
+        runner = NixlRunner(kubectl=Mock())
+        runner.kubectl.start_exec.side_effect = start_exec
+        resources = BackendResources(names={
+            "initiator_pod": "server", "target_pod": "client", "initiator_ip": "10.0.0.1",
+        })
+        config = self.config()
+        config = replace(config, parameters={
+            **config.parameters, "threads": threads, "parallelism": "processes",
+            "block_size_start": 4 << 20, "block_size_max": 4 << 20,
+            "batch_size_start": 1, "batch_size_max": 1,
+        })
+        original = runner_module.PEER_GRACE_SECONDS
+        runner_module.PEER_GRACE_SECONDS = 0.0
+        error_raised = None
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "raw" / f"t{threads}"
+                try:
+                    runner.execute(config, resources, output)
+                except RuntimeError as caught:
+                    error_raised = caught
+                metadata = json.loads(next(output.glob("*-command.json")).read_text(encoding="utf-8"))
+        finally:
+            runner_module.PEER_GRACE_SECONDS = original
+        return metadata, error_raised
+
+    def test_startup_failure_reports_the_reason_from_the_log(self) -> None:
+        class Dead(FakeProcess):
+            def poll(self):
+                return 1
+
+        def start_exec(namespace, pod, command, path):
+            path.write_text(
+                "Using address 10.0.0.1 port 12345\n"
+                "E1016 15:36:22.171194       7 nixl_agent.cpp:318] getPluginParams: backend "
+                "'Mooncake' not found\nNIXL: createBackend failed! (NIXL_ERR_NOT_FOUND)\n",
+                encoding="utf-8",
+            )
+            return Dead()
+
+        runner = NixlRunner(kubectl=Mock())
+        runner.kubectl.start_exec.side_effect = start_exec
+        resources = BackendResources(names={
+            "initiator_pod": "server", "target_pod": "client", "initiator_ip": "10.0.0.1",
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(
+                RuntimeError, r"exited before becoming ready: E1016 .*backend 'Mooncake' not found"
+            ):
+                runner.execute(self.config(), resources, Path(directory) / "raw" / "t1")
+
+    def test_target_teardown_race_after_a_complete_initiator_is_tolerated(self) -> None:
+        metadata, error = self.execute_teardown()
+        self.assertIsNone(error)
+        self.assertEqual(metadata["target_status"], 0)
+        (entry,) = metadata["tolerated_target_exits"]
+        self.assertEqual(entry["process"], "target 2")
+        self.assertEqual(entry["status"], 134)
+        self.assertIn("-p2-target.log", entry["log"])
+
+    def test_teardown_error_without_the_initiator_rows_is_a_failure(self) -> None:
+        _, error = self.execute_teardown(rows=False)
+        self.assertRegex(str(error), r"target 2=134")
+
+    def test_other_target_errors_are_failures(self) -> None:
+        _, error = self.execute_teardown(error="ASIO Receive timeout")
+        self.assertRegex(str(error), r"target 2=134")
+
+    def test_a_failing_initiator_is_never_tolerated(self) -> None:
+        _, error = self.execute_teardown(initiator_status=1)
+        self.assertRegex(str(error), r"initiator 1=1")
+
+    def test_tolerance_helper_needs_every_expected_row(self) -> None:
+        from src.backends.nixl.runner import _expected_rows, _tolerated_target_exits
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initiator = root / "i.log"
+            target = root / "t.log"
+            target.write_text("what():  ASIO Read head failed: End of file\n", encoding="utf-8")
+            expected = _expected_rows((1 << 20, 2 << 20, 1, 2))
+            self.assertEqual(len(expected), 4)
+            initiator.write_text(
+                "".join(f"{b:<20}{n:<15}1.5      10.0\n" for b, n in expected[:3]), encoding="utf-8"
+            )
+            statuses = {"initiator": 0, "target": 134}
+            self.assertEqual(_tolerated_target_exits(statuses, [initiator], [target], expected), [])
+            initiator.write_text(
+                "".join(f"{b:<20}{n:<15}1.5      10.0\n" for b, n in expected), encoding="utf-8"
+            )
+            tolerated = _tolerated_target_exits(statuses, [initiator], [target], expected)
+            self.assertEqual([t["process"] for t in tolerated], ["target"])
 
     def pipeline_config(self, warmup: int):
         config = self.config()

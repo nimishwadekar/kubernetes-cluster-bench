@@ -30,7 +30,7 @@ nodes:
 #     ip: <ip>/<prefix>
 
 dimensions:
-  threads: "1:4"                # iperf3 -P N, swept as start[:end[:step]]
+  threads: "1:4"                # iperf3 -P N: a start[:end[:step]] range, or exact values like "1,2,4,8" or [1, 2, 4, 8]
 
 execution:
   namespace: <namespace>        # optional: defaults to the current kubectl context namespace

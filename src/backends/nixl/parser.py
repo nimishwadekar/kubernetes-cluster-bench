@@ -86,11 +86,17 @@ def _thread_observations(run_directory: Path, metadata: JsonObject) -> list[Obse
 def _process_observations(run_directory: Path, metadata: JsonObject) -> list[Observation]:
     """Observations of a run that used N single-thread pairs per sweep point.
 
-    Every pair moves the same bytes, so the pairs together moved N times what
-    the slowest one did in the time the slowest one took. That is the aggregate
-    over the point's whole window: unlike adding the pairs' own averages, it
-    cannot exceed what the link carried when the pairs finish at different
-    times. ``skew`` (fastest over slowest rate) tells how uneven they were.
+    The pairs start their timed phases at slightly different moments, so adding
+    their own averages overstates the aggregate: a pair that ran partly alone
+    reports a rate the link only gave it for that part. Each pair's timed phase
+    is therefore placed on a common clock from when its result row appeared
+    (``row_seen_s``) and how long it ran (``timed_bytes`` over its rate), and the
+    aggregate is the bytes all pairs moved over the span from the first start
+    to the last end. It never exceeds N times the slowest pair's rate, and it
+    equals the sum of the rates when the pairs ran together. ``overlap`` is the
+    share of that span during which every pair was running, and ``skew`` the
+    fastest rate over the slowest. Without timing (older runs) the aggregate is
+    N times the slowest rate, which is only an upper bound.
     """
 
     processes = _positive_int(metadata.get("processes"), 0)
@@ -106,6 +112,7 @@ def _process_observations(run_directory: Path, metadata: JsonObject) -> list[Obs
         batch_size = _positive_int(point.get("batch_size"), 0)
         rates = []
         initiator_files = []
+        seen = []
         for entry in point["files"]:
             initiator_path = run_directory / _required_string(entry, "initiator_file")
             target_path = run_directory / _required_string(entry, "target_file")
@@ -122,26 +129,38 @@ def _process_observations(run_directory: Path, metadata: JsonObject) -> list[Obs
                 )
             rates.append(rows[0][3])
             initiator_files.append(initiator_path.name)
+            seen.append(entry.get("row_seen_s"))
         if len(rates) != processes or min(rates) <= 0:
             raise ValueError(
                 f"NIXL point block_size={block_size} batch_size={batch_size} needs "
                 f"{processes} positive rates, got {rates}"
             )
+        details: dict[str, JsonValue] = {
+            "row_index": point_index,
+            "initiator_file": initiator_files[0],
+            "initiator_files": initiator_files,
+            "process_rates_GB_s": rates,
+            "skew": max(rates) / min(rates),
+        }
+        aggregate = processes * min(rates)
+        timed_bytes = point.get("timed_bytes")
+        if (
+            isinstance(timed_bytes, (int, float))
+            and not isinstance(timed_bytes, bool)
+            and timed_bytes > 0
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in seen)
+        ):
+            ends = [float(value) for value in seen]  # type: ignore[arg-type]
+            starts = [end - timed_bytes / (rate * 1e9) for end, rate in zip(ends, rates)]
+            window = max(ends) - min(starts)
+            aggregate = processes * timed_bytes / window / 1e9
+            details["aggregate_method"] = "window"
+            details["window_s"] = window
+            details["overlap"] = max(0.0, min(ends) - max(starts)) / window
+        else:
+            details["aggregate_method"] = "slowest_rate"
         observations.append(
-            _observation(
-                processes * min(rates),
-                processes,
-                block_size,
-                batch_size,
-                run_id,
-                {
-                    "row_index": point_index,
-                    "initiator_file": initiator_files[0],
-                    "initiator_files": initiator_files,
-                    "process_rates_GB_s": rates,
-                    "skew": max(rates) / min(rates),
-                },
-            )
+            _observation(aggregate, processes, block_size, batch_size, run_id, details)
         )
     return observations
 

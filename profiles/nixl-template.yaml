@@ -30,7 +30,7 @@ nodes:
 #     ip: <ip>/<prefix>
 
 dimensions:
-  threads: "1:8"
+  threads: "1:8"                # a start[:end[:step]] range, or exact values like "1,2,4,8" or [1, 2, 4, 8]
   block_size: "1K:8M"           # powers of two; K/M/G suffixes (base 1024)
   batch_size: "1:8"             # powers of two
 
@@ -49,9 +49,12 @@ execution:
   nixl:
     warmup_runs: 10
     # run_timeout_seconds: 1800 # kill a NIXLBench execution that exceeds this
+    # backend: UCX             # UCX | LIBFABRIC | Mooncake: the NIXL plugin (the image must contain it, see "NIXL backends" in the README)
+    # repetitions: 1            # run each thread count this many times
     # parallelism: threads      # 'processes': N single-thread nixlbench pairs per point (one pair is limited by its single receive thread over TCP, see "NIXL parallelism" in the README)
     # args:                     # extra nixlbench flags, see "NIXL tuning" in the README
     #   pipeline_depth: 16
-    # env:                      # UCX_/NIXL_/OMP_ variables for both nixlbench processes
+    # env:                      # the backend's variables (UCX_, FI_ or MC_) and NIXL_/OMP_ for both nixlbench processes;
+    #                           # values may use {threads}, {threads*N} and {address}, see "Environment placeholders" in the README
     #   UCX_ZCOPY_THRESH: 1K
     # gpu: false                # CPU-only nodes: no GPU request / CUDA transport (use an image built from images/Dockerfile.nixl-cpu)

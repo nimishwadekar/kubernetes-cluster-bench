@@ -77,6 +77,31 @@ execution:
         self.assertEqual(config.runs, 3)
         self.assertEqual(config.name, "friendly-name")
 
+    def test_threads_can_be_an_exact_list(self) -> None:
+        registry = BackendRegistry(
+            (BackendPlugin(name="fake", profile_dimensions=frozenset({"threads"})),)
+        )
+        for value, expected in (('"1,2,4,6,8"', "1,2,4,6,8"), ("[1, 2, 4, 8]", "1,2,4,8"), ("4", "4")):
+            profile = (
+                "backend: fake\nnodes:\n  initiator: a\n  target: b\n"
+                f"dimensions:\n  threads: {value}\nexecution:\n  image: x\n"
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                profile_path = Path(directory) / "profile.yaml"
+                profile_path.write_text(profile, encoding="utf-8")
+                config = parse_config(["--profile", str(profile_path)], registry)
+            self.assertEqual(config.parameters["threads_spec"], expected)
+        for bad in ("[1, true]", "[1, 2.5]", "[1, a]"):
+            profile = (
+                "backend: fake\nnodes:\n  initiator: a\n  target: b\n"
+                f"dimensions:\n  threads: {bad}\nexecution:\n  image: x\n"
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                profile_path = Path(directory) / "profile.yaml"
+                profile_path.write_text(profile, encoding="utf-8")
+                with self.assertRaises(ValueError, msg=bad):
+                    parse_config(["--profile", str(profile_path)], registry)
+
     def test_profile_uses_declared_image(self) -> None:
         profile = """\
 backend: nixl

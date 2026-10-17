@@ -52,7 +52,7 @@ def print_configuration(
         print(f"  {'Runs per test:':<20} {config.runs}")
     else:
         print(f"  {'Runtime:':<20} ASIO")
-        print(f"  {'Transport:':<20} UCX")
+        print(f"  {'Backend:':<20} {config.parameters.get('backend', 'UCX')}")
         print(f"  {'Initiator memory:':<20} DRAM")
         print(f"  {'Target memory:':<20} DRAM")
         print(
@@ -70,6 +70,11 @@ def print_configuration(
         )
         print(f"  {'Iterations:':<20} {config.runs}")
         print(f"  {'Warmup iterations:':<20} {config.parameters['warmup_runs']}")
+        if config.parameters.get("repetitions", 1) != 1:
+            print(
+                f"  {'Repetitions:':<20} {config.parameters['repetitions']} "
+                "(each thread count is run that many times)"
+            )
         if config.parameters.get("parallelism", "threads") == "processes":
             print(
                 f"  {'Parallelism:':<20} processes (each thread count runs that many "
@@ -113,6 +118,8 @@ def print_run_dimensions(
     )
     print(f"  {'Iterations:':<20} {config.runs}")
     print(f"  {'Warmup iterations:':<20} {parameters.get('warmup_runs')}")
+    if parameters.get("repetitions", 1) != 1:
+        print(f"  {'Repetition:':<20} {parameters.get('run_number')} of {parameters['repetitions']}")
     print(f"{delimiter}\n")
 
 

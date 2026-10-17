@@ -12,10 +12,10 @@ def create_plugin() -> BackendPlugin:
         name="nixl",
         runner_factory=NixlRunner,
         analyzer_factory=NixlAnalyzer,
-        description="GPU buffer-transfer benchmark using NIXLBench",
+        description="Buffer-transfer benchmark using NIXLBench (UCX, LIBFABRIC or Mooncake)",
         supports_network=True,
         profile_options=frozenset(
-            {"warmup_runs", "run_timeout_seconds", "gpu", "parallelism", "args", "env"}
+            {"warmup_runs", "run_timeout_seconds", "gpu", "backend", "parallelism", "repetitions", "args", "env"}
         ),
         profile_mapping_options=frozenset({"args", "env"}),
         profile_dimensions=frozenset({"threads", "block_size", "batch_size"}),
