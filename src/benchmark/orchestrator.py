@@ -16,24 +16,10 @@ from .artifacts import (
 )
 from .contracts import BenchmarkConfig, RunContext
 from .output import print_configuration, print_results, print_run_dimensions
+from .utils import parse_thread_spec
 
 
 Report = Callable[[str], None]
-
-
-def parse_thread_spec(value: str) -> tuple[int, ...]:
-    """Parse an inclusive start[:end[:step]] thread range."""
-
-    parts = value.split(":")
-    if len(parts) not in (1, 2, 3) or any(not part.isdigit() for part in parts):
-        raise ValueError("threads must use start[:end[:step]] with positive values")
-    numbers = [int(part) for part in parts]
-    start = numbers[0]
-    end = start if len(numbers) == 1 else numbers[1]
-    step = 1 if len(numbers) < 3 else numbers[2]
-    if start < 1 or end < start or step < 1:
-        raise ValueError("threads must use positive values with start <= end")
-    return tuple(range(start, end + 1, step))
 
 
 def run_benchmark(
@@ -57,11 +43,7 @@ def run_benchmark(
     runner.validate(config)
 
     thread_values = _thread_values(config.parameters)
-    run_numbers = (
-        tuple(range(1, config.runs + 1))
-        if plugin.framework_repeats
-        else (1,)
-    )
+    run_numbers = tuple(range(1, _repeat_count(config, plugin.framework_repeats) + 1))
     total_runs = len(thread_values) * len(run_numbers)
     test_directory, raw_root = create_test_directory(
         config.log_directory,
@@ -78,11 +60,15 @@ def run_benchmark(
     resources = None
     outcomes: list[RunOutcome] = []
     completed_runs = 0
+    consecutive_failures = 0
+    aborted_reason: str | None = None
     try:
         resources = runner.deploy(config, manifest_path)
         print(f"{output_colors.cyan}Network service created{output_colors.reset}")
         print(f"{output_colors.cyan}Server and client pods running{output_colors.reset}")
         for thread_count in thread_values:
+            if aborted_reason is not None:
+                break
             for run_number in run_numbers:
                 parameters = dict(config.parameters)
                 parameters["threads"] = thread_count
@@ -109,6 +95,7 @@ def run_benchmark(
                         context,
                     )
                 except Exception as error:
+                    consecutive_failures += 1
                     outcomes.append(
                         RunOutcome(
                             thread_count=thread_count,
@@ -123,6 +110,7 @@ def run_benchmark(
                         file=sys.stderr,
                     )
                 else:
+                    consecutive_failures = 0
                     outcome = RunOutcome(
                         thread_count=thread_count,
                         run_number=run_number,
@@ -135,6 +123,17 @@ def run_benchmark(
                         f"{output_colors.reset}\n"
                     )
                 completed_runs += 1
+                limit = config.max_consecutive_failures
+                if limit and consecutive_failures >= limit:
+                    aborted_reason = (
+                        f"aborted after {consecutive_failures} consecutive failed "
+                        "runs (max_consecutive_failures)"
+                    )
+                    print(
+                        f"{output_colors.red}{aborted_reason}{output_colors.reset}",
+                        file=sys.stderr,
+                    )
+                    break
     finally:
         runner.cleanup(config, resources)
 
@@ -144,7 +143,16 @@ def run_benchmark(
         test_directory=test_directory,
         manifest_path=manifest_path,
         outcomes=tuple(outcomes),
+        planned_runs=total_runs,
+        aborted_reason=aborted_reason,
     )
+
+
+def _repeat_count(config: BenchmarkConfig, framework_repeats: bool) -> int:
+    if framework_repeats:
+        return config.runs
+    repetitions = config.parameters.get("repetitions", 1)
+    return repetitions if isinstance(repetitions, int) and not isinstance(repetitions, bool) else 1
 
 
 def _thread_values(parameters: Mapping[str, object]) -> tuple[int, ...]:

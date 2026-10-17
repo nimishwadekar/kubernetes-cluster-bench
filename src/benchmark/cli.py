@@ -8,19 +8,42 @@ import sys
 from typing import Mapping, Sequence
 
 from ..backends.registry import BackendRegistry, default_registry
-from ..common.console import terminal_colors
+from ..common.console import Colors, terminal_colors
 from ..common.types import JsonValue
 from .kubernetes import KubectlClient
-from .contracts import BenchmarkConfig
+from .artifacts import BenchmarkExecution
+from .network import DEFAULT_INTERFACE, NetworkAttachment, SecondaryNetwork
+from .contracts import (
+    DEFAULT_IMAGE_PULL_POLICY,
+    DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    IMAGE_PULL_POLICIES,
+    BenchmarkConfig,
+)
 from .overwrite import OverwriteDeclined, confirm_overwrite
 from .orchestrator import run_benchmark
 from .profile import load_profile, profile_section
+from .resources import PodResources
+from .utils import parse_thread_spec
 
 
-COMMON_PROFILE_FIELDS = frozenset({"backend", "name", "test_id", "nodes", "dimensions", "execution"})
+COMMON_PROFILE_FIELDS = frozenset(
+    {"backend", "name", "test_id", "nodes", "dimensions", "execution", "network"}
+)
+NETWORK_SIDES = ("initiator", "target")
+NETWORK_SIDE_FIELDS = frozenset({"attachment", "interface", "ip"})
 COMMON_NODE_FIELDS = frozenset({"initiator", "target"})
 COMMON_EXECUTION_FIELDS = frozenset(
-    {"namespace", "image", "log_directory", "runs", "timeout_seconds", "keep_resources"}
+    {
+        "namespace",
+        "image",
+        "log_directory",
+        "runs",
+        "timeout_seconds",
+        "keep_resources",
+        "max_consecutive_failures",
+        "image_pull_policy",
+        "resources",
+    }
 )
 
 
@@ -56,6 +79,7 @@ def parse_config(
         raise ValueError("profile field 'backend' is required")
     selected_registry = registry or default_registry()
     plugin = selected_registry.get(backend)
+    network = _parse_network(profile, backend, plugin.supports_network)
     backend_parameters = profile_section(execution, backend)
     _reject_unknown_fields(
         execution,
@@ -74,6 +98,18 @@ def parse_config(
     )
     parameters: dict[str, JsonValue] = {}
     for name, value in backend_parameters.items():
+        if name in plugin.profile_mapping_options:
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(f"profile parameter {name!r} must be a mapping")
+            for key, item in (value or {}).items():
+                if not isinstance(key, str) or (
+                    not isinstance(item, (str, int, float, bool)) or item is None
+                ):
+                    raise ValueError(
+                        f"profile parameter {name!r} must map names to scalar values"
+                    )
+            parameters[name] = dict(value or {})  # type: ignore[assignment]
+            continue
         if not isinstance(value, (str, int, float, bool)) and value is not None:
             raise ValueError(f"profile parameter {name!r} must be a scalar")
         parameters[name] = value  # type: ignore[assignment]
@@ -93,7 +129,7 @@ def parse_config(
         raise ValueError("initiator and target nodes must be different")
 
     threads_spec = _profile_thread_spec(dimensions.get("threads"))
-    thread_values = _parse_thread_spec(threads_spec)
+    thread_values = parse_thread_spec(threads_spec)
     parameters["threads"] = thread_values[0]
     parameters["threads_spec"] = threads_spec
     if backend == "nixl":
@@ -115,6 +151,17 @@ def parse_config(
     timeout = _profile_positive_int(
         execution.get("timeout_seconds"), "timeout_seconds", default=120
     )
+    image_pull_policy = execution.get("image_pull_policy", DEFAULT_IMAGE_PULL_POLICY)
+    if image_pull_policy not in IMAGE_PULL_POLICIES:
+        raise ValueError(
+            "profile field 'image_pull_policy' must be one of: "
+            + ", ".join(IMAGE_PULL_POLICIES)
+        )
+    max_consecutive_failures = _profile_nonnegative_int(
+        execution.get("max_consecutive_failures"),
+        "max_consecutive_failures",
+        default=DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    )
     keep_resources = _profile_bool(
         execution.get("keep_resources"), "keep_resources", default=False
     )
@@ -131,6 +178,10 @@ def parse_config(
         runs=runs,
         timeout_seconds=timeout,
         keep_resources=keep_resources,
+        max_consecutive_failures=max_consecutive_failures,
+        image_pull_policy=image_pull_policy,
+        network=network,
+        resources=_parse_resources(execution),
         parameters=parameters,
     )
 
@@ -155,16 +206,81 @@ def main(
     except (EOFError, OSError, RuntimeError, ValueError) as error:
         print(f"{colors.red}ERROR:{colors.reset} {error}", file=sys.stderr)
         return 2
-    if not execution.successful:
-        for outcome in execution.outcomes:
-            if outcome.error is not None:
-                print(
-                    f"ERROR: threads={outcome.thread_count}, "
-                    f"run={outcome.run_number}: {outcome.error}",
-                    file=sys.stderr,
-                )
-        return 1
-    return 0
+    _print_summary(execution, colors)
+    return 0 if execution.successful else 1
+
+
+def _print_summary(execution: BenchmarkExecution, colors: Colors) -> None:
+    failed = [outcome for outcome in execution.outcomes if not outcome.successful]
+    succeeded = len(execution.outcomes) - len(failed)
+    total = execution.planned_runs or len(execution.outcomes)
+    parts = [f"{succeeded}/{total} runs succeeded"]
+    if failed:
+        parts.append(f"{len(failed)} failed")
+    if execution.not_run:
+        parts.append(f"{execution.not_run} not run")
+    color = colors.green if execution.successful else colors.red
+    print(f"{color}Benchmark summary: {', '.join(parts)}{colors.reset}")
+    for outcome in failed:
+        print(
+            f"ERROR: threads={outcome.thread_count}, "
+            f"run={outcome.run_number}: {outcome.error}",
+            file=sys.stderr,
+        )
+    if execution.aborted_reason is not None:
+        print(f"ERROR: {execution.aborted_reason}", file=sys.stderr)
+
+
+def _parse_resources(execution: Mapping[str, object]) -> PodResources:
+    section = profile_section(execution, "resources")
+    _reject_unknown_fields(
+        section, frozenset({"requests", "limits"}), "profile.execution.resources"
+    )
+    parsed: dict[str, dict[str, str]] = {}
+    for kind in ("requests", "limits"):
+        values = profile_section(section, kind)
+        location = f"profile.execution.resources.{kind}"
+        _reject_unknown_fields(values, frozenset({"cpu", "memory"}), location)
+        parsed[kind] = {}
+        for name, value in values.items():
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                raise ValueError(f"{location}.{name} must be a string or number")
+            parsed[kind][name] = str(value)
+    return PodResources(requests=parsed["requests"], limits=parsed["limits"])
+
+
+def _parse_network(
+    profile: Mapping[str, object],
+    backend: str,
+    supported: bool,
+) -> SecondaryNetwork | None:
+    if "network" not in profile or profile["network"] is None:
+        return None
+    if not supported:
+        raise ValueError(
+            f"backend {backend!r} does not support the 'network' section yet"
+        )
+    section = profile_section(profile, "network")
+    _reject_unknown_fields(section, frozenset(NETWORK_SIDES), "profile.network")
+    sides: dict[str, NetworkAttachment] = {}
+    for side in NETWORK_SIDES:
+        if side not in section:
+            raise ValueError(f"profile section 'network.{side}' is required")
+        fields = profile_section(section, side)
+        location = f"profile.network.{side}"
+        _reject_unknown_fields(fields, NETWORK_SIDE_FIELDS, location)
+        attachment = _profile_string(fields, "attachment")
+        if attachment is None:
+            raise ValueError(f"profile field '{location}.attachment' is required")
+        try:
+            sides[side] = NetworkAttachment(
+                attachment=attachment,
+                interface=_profile_string(fields, "interface") or DEFAULT_INTERFACE,
+                ip=_profile_string(fields, "ip"),
+            )
+        except ValueError as error:
+            raise ValueError(f"{location}: {error}") from error
+    return SecondaryNetwork(**sides)
 
 
 def _reject_unknown_fields(
@@ -246,8 +362,12 @@ def _parse_dimension_number(value: str, name: str) -> int:
 def _profile_thread_spec(value: object) -> str:
     if value is None:
         return "1"
+    if isinstance(value, list):
+        if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+            raise ValueError("profile field 'threads' lists must contain integers")
+        value = ",".join(str(item) for item in value)
     if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise ValueError("profile field 'threads' must be a string or integer")
+        raise ValueError("profile field 'threads' must be a string, integer or list of integers")
     text = str(value)
     if not text:
         raise ValueError("profile field 'threads' must not be empty")
@@ -259,12 +379,13 @@ def _profile_nonnegative_int(
     name: str,
     *,
     required: bool = False,
+    default: int = 0,
     location: str = "execution",
 ) -> int:
     if value is None:
         if required:
             raise ValueError(f"profile field '{location}.{name}' is required")
-        return 0
+        return default
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"profile field {name!r} must be a non-negative integer")
     return value
@@ -294,19 +415,6 @@ def _profile_bool(
     if not isinstance(value, bool):
         raise ValueError(f"profile field {name!r} must be boolean")
     return value
-
-
-def _parse_thread_spec(value: str) -> tuple[int, ...]:
-    parts = value.split(":")
-    if len(parts) not in (1, 2, 3) or any(not part.isdigit() for part in parts):
-        raise ValueError("threads must use start[:end[:step]] with positive values")
-    numbers = [int(part) for part in parts]
-    start = numbers[0]
-    end = start if len(numbers) == 1 else numbers[1]
-    step = 1 if len(numbers) < 3 else numbers[2]
-    if start < 1 or end < start or step < 1:
-        raise ValueError("threads must use positive values with start <= end")
-    return tuple(range(start, end + 1, step))
 
 
 def _default_test_id() -> str:

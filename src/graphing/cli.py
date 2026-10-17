@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import re
 import sys
@@ -123,7 +124,7 @@ def main(
             args.x_dimension,
         )
         output_path = args.output or (
-            test_directory / "graphs" / f"throughput-{args.x_dimension}.png"
+            test_directory / "graphs" / default_graph_filename(args)
         )
         render_graph(
             points,
@@ -146,6 +147,38 @@ def main(
         print(format_error(str(error), sys.stderr), file=sys.stderr)
         return 2
     return 0
+
+
+MAX_FILENAME_LENGTH = 200
+
+
+def default_graph_filename(args: argparse.Namespace) -> str:
+    # By default, generate a name that keeps the sweep parameters inside.
+    parts = [f"{args.y}-{_slug(args.x_dimension)}"]
+    filters = sorted(_split_filter(raw) for raw in args.filter)
+    parts.extend(f"{_slug(name)}-{_slug(value)}" for name, value in filters)
+    if args.series_dimensions:
+        parts.append("by-" + "-".join(_slug(name) for name in args.series_dimensions))
+    if args.percentile is not None:
+        parts.append(f"p{args.percentile:g}")
+    if args.x_log is not None:
+        parts.append(f"xlog{args.x_log:g}")
+    if args.max_throughput is not None:
+        parts.append(f"max{args.max_throughput:g}")
+    name = "__".join(parts)
+    if len(name) > MAX_FILENAME_LENGTH:
+        digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+        name = f"{name[: MAX_FILENAME_LENGTH - 9]}-{digest}"
+    return f"{name}.png"
+
+
+def _split_filter(raw: str) -> tuple[str, str]:
+    name, _, value = raw.partition("=")
+    return name.strip(), value.strip()
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._]+", "-", text).strip("-") or "x"
 
 
 def percentile(value: str) -> float:
