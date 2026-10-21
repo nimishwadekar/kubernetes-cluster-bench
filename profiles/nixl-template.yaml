@@ -1,0 +1,60 @@
+# NIXLBench (GPU nodes, UCX over TCP) profile template.
+#
+# Copy to profiles/local/ (git-ignored), fill in the <placeholders>, then run:
+#   cp profiles/nixl-template.yaml profiles/local/my-nixl.yaml
+#   ./run-benchmark.sh --profile profiles/local/my-nixl.yaml
+
+backend: nixl
+
+# Dataset name: results go to <log_directory>/<name>/ (asked before overwriting).
+name: my-nixl
+
+# Optional: stable identity for Kubernetes resource names (generated if omitted).
+# test_id: my-nixl-1
+
+nodes:
+  initiator: <initiator-node>   # needs a free nvidia.com/gpu
+  target: <target-node>         # must differ from the initiator
+
+# Optional: run over Multus secondary NICs instead of the pod's eth0.
+# Each side has its own attachment because the nodes usually use different NICs.
+# See "Secondary network (Multus)" in the README. Omit the whole section to use eth0.
+# network:
+#   initiator:
+#     attachment: <network-attachment-definition>   # or <namespace>/<name>
+#     interface: net1                               # optional: interface name inside the pod
+#     ip: <ip>/<prefix>                             # optional: request a static IP (IPAM must honor it)
+#   target:
+#     attachment: <network-attachment-definition>
+#     interface: net1
+#     ip: <ip>/<prefix>
+
+dimensions:
+  threads: "1:8"                # a start[:end[:step]] range, or exact values like "1,2,4,8" or [1, 2, 4, 8]
+  block_size: "1K:8M"           # powers of two; K/M/G suffixes (base 1024)
+  batch_size: "1:8"             # powers of two
+
+execution:
+  namespace: <namespace>        # optional: defaults to the current kubectl context namespace
+  image: <registry>/nixl-benchmark:<tag>   # built from images/Dockerfile.nixl-gpu (or -cpu)
+  image_pull_policy: Always     # Always | IfNotPresent | Never (use Never/IfNotPresent for locally loaded images)
+  log_directory: logs
+  runs: 100                     # passed to NIXLBench as --num_iter
+  timeout_seconds: 120          # pod readiness / initiator startup
+  keep_resources: false
+  # max_consecutive_failures: 5 # abort after N failed runs in a row (0 disables)
+  # resources:                  # defaults: requests cpu 1 / 8Gi, limits cpu 8 / 32Gi
+  #   requests: {cpu: 8, memory: 8Gi}   # equal requests and limits = Guaranteed QoS
+  #   limits:   {cpu: 8, memory: 8Gi}   # keep limits.cpu >= the thread count
+  nixl:
+    warmup_runs: 10
+    # run_timeout_seconds: 1800 # kill a NIXLBench execution that exceeds this
+    # backend: UCX             # UCX | LIBFABRIC | Mooncake: the NIXL plugin (the image must contain it, see "NIXL backends" in the README)
+    # repetitions: 1            # run each thread count this many times
+    # parallelism: threads      # 'processes': N single-thread nixlbench pairs per point (one pair is limited by its single receive thread over TCP, see "NIXL parallelism" in the README)
+    # args:                     # extra nixlbench flags, see "NIXL tuning" in the README
+    #   pipeline_depth: 16
+    # env:                      # the backend's variables (UCX_, FI_ or MC_) and NIXL_/OMP_ for both nixlbench processes;
+    #                           # values may use {threads}, {threads*N} and {address}, see "Environment placeholders" in the README
+    #   UCX_ZCOPY_THRESH: 1K
+    # gpu: false                # CPU-only nodes: no GPU request / CUDA transport (use an image built from images/Dockerfile.nixl-cpu)

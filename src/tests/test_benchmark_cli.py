@@ -77,6 +77,31 @@ execution:
         self.assertEqual(config.runs, 3)
         self.assertEqual(config.name, "friendly-name")
 
+    def test_threads_can_be_an_exact_list(self) -> None:
+        registry = BackendRegistry(
+            (BackendPlugin(name="fake", profile_dimensions=frozenset({"threads"})),)
+        )
+        for value, expected in (('"1,2,4,6,8"', "1,2,4,6,8"), ("[1, 2, 4, 8]", "1,2,4,8"), ("4", "4")):
+            profile = (
+                "backend: fake\nnodes:\n  initiator: a\n  target: b\n"
+                f"dimensions:\n  threads: {value}\nexecution:\n  image: x\n"
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                profile_path = Path(directory) / "profile.yaml"
+                profile_path.write_text(profile, encoding="utf-8")
+                config = parse_config(["--profile", str(profile_path)], registry)
+            self.assertEqual(config.parameters["threads_spec"], expected)
+        for bad in ("[1, true]", "[1, 2.5]", "[1, a]"):
+            profile = (
+                "backend: fake\nnodes:\n  initiator: a\n  target: b\n"
+                f"dimensions:\n  threads: {bad}\nexecution:\n  image: x\n"
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                profile_path = Path(directory) / "profile.yaml"
+                profile_path.write_text(profile, encoding="utf-8")
+                with self.assertRaises(ValueError, msg=bad):
+                    parse_config(["--profile", str(profile_path)], registry)
+
     def test_profile_uses_declared_image(self) -> None:
         profile = """\
 backend: nixl
@@ -123,6 +148,175 @@ execution:
             profile_path.write_text(profile, encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "powers of two"):
                 parse_config(["--profile", str(profile_path)])
+
+    def test_max_consecutive_failures_profile_field(self) -> None:
+        template = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        self.assertEqual(load("").max_consecutive_failures, 5)
+        self.assertEqual(load("  max_consecutive_failures: 0\n").max_consecutive_failures, 0)
+        self.assertEqual(load("  max_consecutive_failures: 3\n").max_consecutive_failures, 3)
+        with self.assertRaises(ValueError):
+            load("  max_consecutive_failures: -1\n")
+
+    def test_profile_templates_load(self) -> None:
+        profiles = Path(__file__).resolve().parents[2] / "profiles"
+        for backend in ("iperf3", "nixl"):
+            config = parse_config(
+                ["--profile", str(profiles / f"{backend}-template.yaml")]
+            )
+            self.assertEqual(config.backend, backend)
+            self.assertNotEqual(config.initiator_node, config.target_node)
+
+    def test_image_pull_policy_profile_field(self) -> None:
+        template = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        self.assertEqual(load("").image_pull_policy, "Always")
+        self.assertEqual(load("  image_pull_policy: Never\n").image_pull_policy, "Never")
+        with self.assertRaisesRegex(ValueError, "image_pull_policy"):
+            load("  image_pull_policy: Sometimes\n")
+
+    def test_network_profile_section(self) -> None:
+        template = """\
+backend: %s
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s
+%s"""
+        backend_sections = {
+            "iperf3": "",
+            "nixl": '  nixl: {warmup_runs: 1}\ndimensions: {block_size: "4M", batch_size: 1}',
+        }
+        def load(backend: str, extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(
+                    template % (backend, backend_sections[backend], extra),
+                    encoding="utf-8",
+                )
+                return parse_config(["--profile", str(path)])
+
+        self.assertIsNone(load("iperf3", "").network)
+        full = (
+            "network:\n"
+            "  initiator: {attachment: cx7-a}\n"
+            "  target: {attachment: ns/cx7-b, interface: net2, ip: 10.0.0.2/24}\n"
+        )
+        network = load("iperf3", full).network
+        self.assertEqual(network.initiator.attachment, "cx7-a")
+        self.assertEqual(network.initiator.interface, "net1")
+        self.assertIsNone(network.initiator.ip)
+        self.assertEqual(network.target.attachment, "ns/cx7-b")
+        self.assertEqual(network.target.interface, "net2")
+        self.assertEqual(network.target.ip, "10.0.0.2/24")
+        with self.assertRaisesRegex(ValueError, "network.target' is required"):
+            load("iperf3", "network:\n  initiator: {attachment: cx7-a}\n")
+        with self.assertRaisesRegex(ValueError, "initiator.attachment"):
+            load("iperf3", "network:\n  initiator: {interface: net1}\n  target: {attachment: b}\n")
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            load("iperf3", "network:\n  attachment: cx7\n  initiator: {attachment: a}\n  target: {attachment: b}\n")
+        with self.assertRaisesRegex(ValueError, "network.target: ip must include"):
+            load("iperf3", "network:\n  initiator: {attachment: a}\n  target: {attachment: b, ip: 10.0.0.2}\n")
+        self.assertEqual(load("nixl", full).network.target.interface, "net2")
+
+        unsupported = BackendRegistry((BackendPlugin(name="fake"),))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "p.yaml"
+            path.write_text(
+                "backend: fake\nnodes: {initiator: a, target: b}\n"
+                "execution: {image: x/y:z, namespace: bench}\n" + full,
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "does not support"):
+                parse_config(["--profile", str(path)], unsupported)
+
+    def test_resources_profile_section(self) -> None:
+        template = """\
+backend: iperf3
+nodes:
+  initiator: worker-a
+  target: worker-b
+execution:
+  image: example/image:latest
+  namespace: bench
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        self.assertTrue(load("").resources.is_empty)
+        resources = load(
+            "  resources:\n    requests: {cpu: 2, memory: 4Gi}\n    limits: {cpu: 4}\n"
+        ).resources
+        self.assertEqual(dict(resources.requests), {"cpu": "2", "memory": "4Gi"})
+        self.assertEqual(dict(resources.limits), {"cpu": "4"})
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            load("  resources:\n    requests: {gpu: 1}\n")
+        with self.assertRaisesRegex(ValueError, "unsupported field"):
+            load("  resources:\n    cpu: 2\n")
+        with self.assertRaisesRegex(ValueError, "limits.memory"):
+            load("  resources:\n    limits: {memory: lots}\n")
+        with self.assertRaisesRegex(ValueError, "must be a string or number"):
+            load("  resources:\n    limits: {cpu: true}\n")
+
+    def test_nixl_args_and_env_profile_sections(self) -> None:
+        template = """\
+backend: nixl
+nodes:
+  initiator: worker-a
+  target: worker-b
+dimensions: {block_size: "4M", batch_size: 1}
+execution:
+  image: example/image:latest
+  namespace: bench
+  nixl:
+    warmup_runs: 1
+%s"""
+        def load(extra: str):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "p.yaml"
+                path.write_text(template % extra, encoding="utf-8")
+                return parse_config(["--profile", str(path)])
+
+        config = load("    args: {pipeline_depth: 16, enable_pt: true}\n    env: {UCX_ZCOPY_THRESH: 1K, UCX_TCP_NODELAY: false}\n")
+        self.assertEqual(config.parameters["args"], {"pipeline_depth": 16, "enable_pt": True})
+        self.assertEqual(config.parameters["env"], {"UCX_ZCOPY_THRESH": "1K", "UCX_TCP_NODELAY": False})
+        self.assertNotIn("args", load("").parameters)
+        with self.assertRaisesRegex(ValueError, "must be a mapping"):
+            load("    args: [pipeline_depth]\n")
+        with self.assertRaisesRegex(ValueError, "scalar values"):
+            load("    env: {UCX_TLS: [tcp]}\n")
 
     def test_missing_image_is_rejected(self) -> None:
         profile = """\

@@ -33,6 +33,17 @@ def print_configuration(
     print(f"  {'Logs directory:':<20} {config.log_directory}")
     print(f"  {'Image:':<20} {config.image}")
     print(f"  {'Backend:':<20} {config.backend}")
+    if config.network is not None:
+        for label, side in (("Client", config.network.initiator), ("Server", config.network.target)):
+            requested = f", ip {side.ip}" if side.ip else ""
+            print(f"  {label + ' network:':<20} {side.attachment} ({side.interface}{requested})")
+    for kind, values in (
+        ("requests", config.resources.requests),
+        ("limits", config.resources.limits),
+    ):
+        if values:
+            settings = ", ".join(f"{name}={value}" for name, value in values.items())
+            print(f"  {'Pod ' + kind + ':':<20} {settings}")
     print(f"  {'Threads:':<20} {config.parameters.get('threads_spec', '1')}")
     if framework_repeats or config.backend != "nixl":
         print(f"  {'Protocol:':<20} TCP")
@@ -41,7 +52,7 @@ def print_configuration(
         print(f"  {'Runs per test:':<20} {config.runs}")
     else:
         print(f"  {'Runtime:':<20} ASIO")
-        print(f"  {'Transport:':<20} UCX")
+        print(f"  {'Backend:':<20} {config.parameters.get('backend', 'UCX')}")
         print(f"  {'Initiator memory:':<20} DRAM")
         print(f"  {'Target memory:':<20} DRAM")
         print(
@@ -50,7 +61,7 @@ def print_configuration(
             f"{_format_bytes(config.parameters['block_size_max'])}"
         )
         max_transfer = int(config.parameters['block_size_max']) * int(config.parameters['batch_size_max'])
-        threads = int(config.parameters['threads'])
+        threads = 1 if config.parameters.get("parallelism") == "processes" else int(config.parameters['threads'])
         total_buffer = max_transfer * threads
         print(f"  {'Total buffer:':<20} {_format_bytes(total_buffer)}")
         print(
@@ -59,6 +70,21 @@ def print_configuration(
         )
         print(f"  {'Iterations:':<20} {config.runs}")
         print(f"  {'Warmup iterations:':<20} {config.parameters['warmup_runs']}")
+        if config.parameters.get("repetitions", 1) != 1:
+            print(
+                f"  {'Repetitions:':<20} {config.parameters['repetitions']} "
+                "(each thread count is run that many times)"
+            )
+        if config.parameters.get("parallelism", "threads") == "processes":
+            print(
+                f"  {'Parallelism:':<20} processes (each thread count runs that many "
+                "single-thread nixlbench pairs, one sweep point at a time)"
+            )
+        for label, key in (("NIXL args:", "args"), ("NIXL env:", "env")):
+            settings = config.parameters.get(key)
+            if settings:
+                text = ", ".join(f"{name}={value}" for name, value in settings.items())
+                print(f"  {label:<20} {text}")
     print()
 
 
@@ -72,14 +98,18 @@ def print_run_dimensions(
     delimiter = f"{colors.cyan}{'=' * 72}{colors.reset}"
     print(f"\n{delimiter}")
     print(f"{colors.cyan}NIXL run dimensions{colors.reset}")
-    print(f"  {'Threads:':<20} {parameters.get('threads')}")
+    processes = parameters.get("parallelism", "threads") == "processes"
+    print(
+        f"  {'Threads:':<20} {parameters.get('threads')}"
+        + (" (processes of 1 thread each)" if processes else "")
+    )
     print(
         f"  {'Block size:':<20} "
         f"{_format_bytes(parameters['block_size_start'])}:"
         f"{_format_bytes(parameters['block_size_max'])}"
     )
     max_transfer = int(parameters['block_size_max']) * int(parameters['batch_size_max'])
-    threads = int(parameters['threads'])
+    threads = 1 if processes else int(parameters['threads'])
     total_buffer = max_transfer * threads
     print(f"  {'Total buffer:':<20} {total_buffer} bytes")
     print(
@@ -88,6 +118,8 @@ def print_run_dimensions(
     )
     print(f"  {'Iterations:':<20} {config.runs}")
     print(f"  {'Warmup iterations:':<20} {parameters.get('warmup_runs')}")
+    if parameters.get("repetitions", 1) != 1:
+        print(f"  {'Repetition:':<20} {parameters.get('run_number')} of {parameters['repetitions']}")
     print(f"{delimiter}\n")
 
 

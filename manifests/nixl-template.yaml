@@ -1,5 +1,5 @@
 # NIXLBench Kubernetes resources for a two-node GPU KV-cache transfer test.
-# Replace __TEST_ID__, __IMAGE__, __CLIENT_NODE__, and __SERVER_NODE__ before applying.
+# Replace __TEST_ID__, __IMAGE__, __IMAGE_PULL_POLICY__, __CLIENT_NODE__, and __SERVER_NODE__ before applying.
 # Both benchmark pods run nixlbench with the ASIO runtime; no etcd resources are required.
 # UCX_TLS restricts the data path to TCP plus CUDA host staging; RDMA is excluded.
 
@@ -20,7 +20,7 @@ spec:
   containers:
     - name: nixlbench-server
       image: __IMAGE__
-      imagePullPolicy: Always
+      imagePullPolicy: __IMAGE_PULL_POLICY__
       command: ["sleep"]
       args: ["infinity"]
       env:
@@ -57,7 +57,7 @@ spec:
   containers:
     - name: nixlbench-client
       image: __IMAGE__
-      imagePullPolicy: Always
+      imagePullPolicy: __IMAGE_PULL_POLICY__
       command: ["sleep"]
       args: ["infinity"]
       env:

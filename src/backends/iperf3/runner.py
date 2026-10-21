@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -17,7 +15,20 @@ from ...benchmark.contracts import (
     RunContext,
 )
 from ...benchmark.kubernetes import KubectlClient, wait_for_tcp_listener
+from ...benchmark.network import (
+    apply_secondary_network,
+    discover_addresses,
+    verify_attachments,
+)
 from ...benchmark.process import terminate_process
+from ...benchmark.resources import apply_resources
+from ...benchmark.utils import (
+    format_eta,
+    is_nonnegative_int,
+    is_positive_int,
+    resource_overrides,
+    utc_timestamp,
+)
 from ...common.console import Colors
 from ...common.types import JsonValue
 
@@ -48,14 +59,14 @@ class Iperf3Runner(BenchmarkRunner):
     def validate(self, config: BenchmarkConfig) -> None:
         parameters = config.parameters
         threads = parameters.get("threads", 1)
-        if not _positive_int(threads):
+        if not is_positive_int(threads):
             raise ValueError("iperf3 threads must be a positive integer")
 
         duration = parameters.get("duration_seconds", 10)
-        if not _positive_int(duration):
+        if not is_positive_int(duration):
             raise ValueError("duration_seconds must be a positive integer")
         warmup = parameters.get("warmup_seconds", 5)
-        if not _nonnegative_int(warmup):
+        if not is_nonnegative_int(warmup):
             raise ValueError("warmup_seconds must be a non-negative integer")
 
         if not self.manifest_template.is_file():
@@ -69,6 +80,7 @@ class Iperf3Runner(BenchmarkRunner):
             "__CLIENT_NODE__": config.initiator_node,
             "__SERVER_NODE__": config.target_node,
             "__IMAGE__": config.image,
+            "__IMAGE_PULL_POLICY__": config.image_pull_policy,
         }
         missing = [marker for marker in replacements if marker not in manifest]
         if missing:
@@ -84,12 +96,23 @@ class Iperf3Runner(BenchmarkRunner):
                 "iperf3 manifest still contains placeholder(s): "
                 + ", ".join(remaining)
             )
+        if config.network is not None:
+            names = self.resource_names(config)
+            manifest = apply_secondary_network(
+                manifest,
+                config.network,
+                {names["client_pod"]: "initiator", names["server_pod"]: "target"},
+            )
+        if not config.resources.is_empty:
+            manifest = apply_resources(manifest, config.resources)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(manifest, encoding="utf-8")
 
     def deploy(self, config: BenchmarkConfig, manifest: Path) -> BackendResources:
         self.validate(config)
         names = self.resource_names(config)
+        if config.network is not None:
+            verify_attachments(self.kubectl, config.namespace, config.network)
         for resource in names["collision_targets"]:
             if self.kubectl.resource_exists(resource, config.namespace):
                 raise ValueError(
@@ -104,6 +127,14 @@ class Iperf3Runner(BenchmarkRunner):
                     "jsonpath={.status.phase}=Running",
                     config.timeout_seconds,
                 )
+            addresses: dict[str, str] = {}
+            if config.network is not None:
+                addresses = discover_addresses(
+                    self.kubectl,
+                    config.namespace,
+                    config.network,
+                    {"initiator": names["client_pod"], "target": names["server_pod"]},
+                )
         except BaseException:
             self.kubectl.delete_manifest(config.namespace, manifest)
             raise
@@ -112,6 +143,7 @@ class Iperf3Runner(BenchmarkRunner):
                 "server_service": names["server_service"],
                 "server_pod": names["server_pod"],
                 "client_pod": names["client_pod"],
+                **addresses,
             },
             manifest_path=manifest,
         )
@@ -144,11 +176,13 @@ class Iperf3Runner(BenchmarkRunner):
             "namespace": config.namespace,
             "image": config.image,
             "parameters": dict(config.parameters),
+            "network": self._network_metadata(config, resources),
+            "resource_overrides": resource_overrides(config),
             "client_command": client_command,
             "server_command": server_command,
             "client_file": client_log.name,
             "server_file": f"../{server_log.name}",
-            "started_at": _utc_timestamp(),
+            "started_at": utc_timestamp(),
         }
         write_json(command_log, command_metadata)
 
@@ -198,7 +232,7 @@ class Iperf3Runner(BenchmarkRunner):
             )
 
         command_metadata["client_status"] = client_status
-        command_metadata["finished_at"] = _utc_timestamp()
+        command_metadata["finished_at"] = utc_timestamp()
         write_json(command_log, command_metadata)
         return output_directory
 
@@ -245,12 +279,14 @@ class Iperf3Runner(BenchmarkRunner):
             "--",
             "iperf3",
             "-c",
-            resources.names["server_service"],
+            resources.names.get("target_address", resources.names["server_service"]),
             "-J",
             "-P",
             str(thread_count),
             "--get-server-output",
         ]
+        if "initiator_address" in resources.names:
+            command.extend(["-B", resources.names["initiator_address"]])
         duration = int(config.parameters.get("duration_seconds", 10))
         warmup = int(config.parameters.get("warmup_seconds", 5))
         command.extend(["-t", str(duration + warmup), "-O", str(warmup)])
@@ -272,6 +308,22 @@ class Iperf3Runner(BenchmarkRunner):
             "-s",
             "-J",
         ]
+
+    def _network_metadata(
+        self,
+        config: BenchmarkConfig,
+        resources: BackendResources,
+    ) -> dict[str, JsonValue] | None:
+        if config.network is None:
+            return None
+        return {
+            role: {
+                "attachment": config.network.for_role(role).attachment,
+                "interface": config.network.for_role(role).interface,
+                "address": resources.names.get(f"{role}_address"),
+            }
+            for role in ("initiator", "target")
+        }
 
     def resource_names(self, config: BenchmarkConfig) -> dict[str, object]:
         server_name = f"network-benchmark-server-{config.test_id}"
@@ -310,7 +362,7 @@ class Iperf3Runner(BenchmarkRunner):
             if context.completed_runs > 0
             else total_duration * context.total_runs
         )
-        self._report(context, f"Estimated time remaining: {_format_eta(eta_seconds)}")
+        self._report(context, f"Estimated time remaining: {format_eta(eta_seconds)}")
         started = time.monotonic()
         while process.poll() is None:
             elapsed = time.monotonic() - started
@@ -350,26 +402,3 @@ def _print_progress(percent: float, colors: Colors | None = None) -> None:
         end="",
         flush=True,
     )
-
-
-def _format_eta(seconds: float) -> str:
-    remaining = max(0, int(round(seconds)))
-    minutes, seconds = divmod(remaining, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
-
-
-def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _positive_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
-
-
-def _nonnegative_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
